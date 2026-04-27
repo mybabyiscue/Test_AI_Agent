@@ -1,0 +1,31 @@
+{
+  "environments": {
+    "local": {
+      "api_base_url": "http://localhost:8000",
+      "front_web_url": "http://localhost:5173",
+      "admin_web_url": "http://localhost:5174",
+      "auth": {
+        "front_user": {
+          "username": "replace_with_front_username",
+          "password": "replace_with_front_password",
+          "login_path": "/api/front/auth/login"
+        },
+        "admin_user": {
+          "username": "replace_with_admin_username",
+          "password": "replace_with_admin_password",
+          "login_path": "/api/admin/auth/login"
+        },
+        "token": {
+          "json_path": "data.token",
+          "header_name": "Authorization",
+          "scheme": "Bearer"
+        }
+      },
+      "data_policy": {
+        "allow_create": true,
+        "allow_update": true,
+        "allow_delete": true
+      }
+    }
+  }
+}

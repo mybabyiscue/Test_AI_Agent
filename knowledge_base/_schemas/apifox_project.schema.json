@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "apifox_project.schema.json",
+  "title": "Apifox 接口知识文件",
+  "description": "约束接口获取 Agent 从 Apifox 项目中整理出的标准接口知识文件。",
+  "type": "object",
+  "required": ["file_info", "system", "platform", "project_id", "apis", "missing_fields", "warnings"],
+  "properties": {
+    "file_info": {
+      "type": "object",
+      "required": ["file_name", "purpose", "main_contents", "stage"],
+      "properties": {
+        "file_name": {"type": "string"},
+        "purpose": {"type": "string"},
+        "main_contents": {"type": "string"},
+        "stage": {"type": "string"}
+      }
+    },
+    "system": {"type": "string"},
+    "platform": {"const": "apifox"},
+    "project_id": {"type": "string"},
+    "source_url": {"type": "string"},
+    "collected_at": {"type": "string"},
+    "collector_version": {"type": "string"},
+    "apis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["module", "api_name", "method", "path", "missing_fields"],
+        "properties": {
+          "module": {"type": "string"},
+          "folder_path": {"type": "array", "items": {"type": "string"}},
+          "api_name": {"type": "string"},
+          "method": {"type": "string"},
+          "path": {"type": "string"},
+          "description": {"type": "string"},
+          "headers": {"type": "object"},
+          "path_params": {"type": "array"},
+          "query_params": {"type": "array"},
+          "request_body": {"type": "object"},
+          "response_body": {"type": "object"},
+          "examples": {"type": "object"},
+          "auth_type": {"type": "string"},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "missing_fields": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "missing_fields": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

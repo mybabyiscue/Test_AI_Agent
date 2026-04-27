@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RequirementModel",
+  "type": "object",
+  "required": ["requirement_id", "title", "scenarios"],
+  "properties": {
+    "requirement_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "source_path": {
+      "type": "string"
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scenario_id", "name", "expected_outcome"],
+        "properties": {
+          "scenario_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "expected_outcome": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

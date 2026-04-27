@@ -1,0 +1,156 @@
+﻿{
+  "file_info": {
+    "file_name": "knowledge_sources.example.json",
+    "purpose": "提供接口获取 Agent 的知识来源配置模板，说明系统、数据库、Apifox 项目和环境变量如何登记。",
+    "main_contents": "包含 silkroad、shark、saas、callcenter 的数据库库名清单、Apifox 项目地址和凭证环境变量名，不包含任何明文密码或令牌。",
+    "stage": "接口获取 Agent 配置准备阶段"
+  },
+  "credentials_policy": {
+    "rule": "本文件只允许保存环境变量名和来源声明，不允许保存明文数据库密码、Apifox Token 或 TAPD Token。",
+    "database_credentials": "通过环境变量或 config/credentials.local.json 等本地私有配置读取。",
+    "platform_tokens": "通过统一凭证管理层读取。"
+  },
+  "systems": {
+    "silkroad": {
+      "display_name": "丝路",
+      "databases": {
+        "profile": "silkroad",
+        "type": "mysql",
+        "host_env": "SILKROAD_DB_HOST",
+        "port_env": "SILKROAD_DB_PORT",
+        "user_env": "SILKROAD_DB_USER",
+        "password_env": "SILKROAD_DB_PASSWORD",
+        "schemas": [
+          "center",
+          "cms",
+          "crm_core",
+          "cx",
+          "ec",
+          "oms",
+          "result"
+        ]
+      },
+      "apis": [
+        {
+          "platform": "apifox",
+          "project_id": "776242",
+          "url": "https://app.apifox.com/project/776242",
+          "credential_profile": "default"
+        }
+      ]
+    },
+    "shark": {
+      "display_name": "鲨域",
+      "databases": {
+        "profile": "shark",
+        "type": "mysql",
+        "host_env": "SHARK_DB_HOST",
+        "port_env": "SHARK_DB_PORT",
+        "user_env": "SHARK_DB_USER",
+        "password_env": "SHARK_DB_PASSWORD",
+        "schemas": [
+          "mall4cloud_saas_admin",
+          "mall4cloud_saas_appmsg",
+          "mall4cloud_saas_auth",
+          "mall4cloud_saas_biz",
+          "mall4cloud_saas_contact",
+          "mall4cloud_saas_etl",
+          "mall4cloud_saas_flow",
+          "mall4cloud_saas_group",
+          "mall4cloud_saas_internethospital",
+          "mall4cloud_saas_logistics",
+          "mall4cloud_saas_marketing",
+          "mall4cloud_saas_order",
+          "mall4cloud_saas_payment",
+          "mall4cloud_saas_product",
+          "mall4cloud_saas_scrm",
+          "mall4cloud_saas_seckill",
+          "mall4cloud_saas_sms",
+          "mall4cloud_saas_sop",
+          "mall4cloud_saas_tag",
+          "mall4cloud_saas_tag_old",
+          "mall4cloud_saas_task",
+          "mall4cloud_saas_user",
+          "scrm"
+        ]
+      },
+      "apis": [],
+      "run_directory_policy": {
+        "stable_run_system_key": "saas",
+        "rule": "鲨域相关新需求的运行记录目录统一归档到 saas 标识目录，避免与 SAAS/享佳云重复分裂。",
+        "database_scope_rule": "鲨域数据库结构仍保持独立，使用 knowledge_base/shark/database，不并入 knowledge_base/saas/database。",
+        "api_scope_rule": "独立鲨域接口库如不存在，则按 SAAS/享佳云/鲨域别名接口库处理；如后续恢复独立鲨域接口库，可在接口来源说明中明确。"
+      },
+      "api_source_policy": {
+        "status": "disabled",
+        "reason": "鲨域接口不再单独同步到 knowledge_base/shark/apis；按统一规则归并到 saas 接口知识库。",
+        "unified_system_key": "saas",
+        "unified_api_project_id": "4152663",
+        "previous_independent_projects": [
+          {
+            "platform": "apifox",
+            "project_id": "7714336",
+            "url": "https://app.apifox.com/project/7714336",
+            "credential_profile": "default"
+          }
+        ]
+      }
+    },
+    "saas": {
+      "display_name": "SAAS / 享佳云 / 鲨域",
+      "name_note": "SAAS、享佳云、鲨域在需求归档和接口识别中可按同一套 SAAS 知识体系处理；但数据库范围仍按用户原始指定系统区分。",
+      "databases": {
+        "profile": "saas",
+        "type": "mysql",
+        "host_env": "SAAS_DB_HOST",
+        "port_env": "SAAS_DB_PORT",
+        "user_env": "SAAS_DB_USER",
+        "password_env": "SAAS_DB_PASSWORD",
+        "schemas": [
+          "contact",
+          "customer",
+          "ec",
+          "etl",
+          "saas",
+          "scrm",
+          "shark",
+          "shop",
+          "sop"
+        ]
+      },
+      "apis": [
+        {
+          "platform": "apifox",
+          "project_id": "4152663",
+          "url": "https://app.apifox.com/project/4152663",
+          "credential_profile": "default"
+        }
+      ],
+      "aliases": [
+        "SAAS",
+        "享佳云",
+        "鲨域",
+        "xiangjiayun",
+        "shark"
+      ],
+      "run_directory_policy": {
+        "stable_run_system_key": "saas",
+        "rule": "后续用户提到 SAAS、享佳云、鲨域、xiangjiayun、shark 时，新需求运行记录目录统一使用 saas 作为系统标识，不再单独生成 shark 运行目录。",
+        "alias_display_rule": "用户原始叫法只写入报告说明和 source_scope，不参与运行目录命名。",
+        "database_scope_rule": "数据库不随运行目录归并：用户明确说鲨域时使用 shark 数据库知识库；用户说 SAAS 或享佳云时使用 saas 数据库知识库。"
+      }
+    },
+    "callcenter": {
+      "display_name": "呼叫中心",
+      "databases": null,
+      "apis": [
+        {
+          "platform": "apifox",
+          "project_id": "460082",
+          "url": "https://app.apifox.com/project/460082",
+          "credential_profile": "default"
+        }
+      ]
+    }
+  }
+}

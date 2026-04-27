@@ -1,0 +1,30 @@
+{
+  "file_info": {
+    "file_name": "registry.example.json",
+    "purpose": "提供知识库索引模板，说明每个系统的数据库结构文件和接口文件应该登记在哪里。",
+    "main_contents": "包含系统名称、数据库知识文件路径、接口知识文件路径、更新时间和维护说明，不包含任何密钥。",
+    "stage": "接口获取 Agent 知识库准备阶段"
+  },
+  "systems": {
+    "silkroad": {
+      "database_dir": "knowledge_base/silkroad/database",
+      "api_dir": "knowledge_base/silkroad/apis",
+      "description": "丝路系统接口与数据库结构知识库"
+    },
+    "shark": {
+      "database_dir": "knowledge_base/shark/database",
+      "api_dir": "knowledge_base/shark/apis",
+      "description": "鲨域系统接口与数据库结构知识库"
+    },
+    "saas": {
+      "database_dir": "knowledge_base/saas/database",
+      "api_dir": "knowledge_base/saas/apis",
+      "description": "SAAS 系统接口与数据库结构知识库"
+    },
+    "callcenter": {
+      "database_dir": null,
+      "api_dir": "knowledge_base/callcenter/apis",
+      "description": "呼叫中心系统接口知识库"
+    }
+  }
+}

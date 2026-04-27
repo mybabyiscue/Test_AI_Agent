@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "database_schema.schema.json",
+  "title": "数据库结构知识文件",
+  "description": "约束接口获取 Agent 采集的 MySQL 数据库结构知识文件，只允许保存结构信息，不允许保存业务数据。",
+  "type": "object",
+  "required": ["file_info", "system", "source_type", "db_name", "tables", "missing_fields", "warnings"],
+  "properties": {
+    "file_info": {
+      "type": "object",
+      "required": ["file_name", "purpose", "main_contents", "stage"],
+      "properties": {
+        "file_name": {"type": "string"},
+        "purpose": {"type": "string"},
+        "main_contents": {"type": "string"},
+        "stage": {"type": "string"}
+      }
+    },
+    "system": {"type": "string"},
+    "source_type": {"const": "mysql_schema"},
+    "db_name": {"type": "string"},
+    "collected_at": {"type": "string"},
+    "collector_version": {"type": "string"},
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["table_name", "table_comment", "columns"],
+        "properties": {
+          "table_name": {"type": "string"},
+          "table_comment": {"type": "string"},
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["column_name", "data_type", "is_nullable", "column_key", "column_comment"],
+              "properties": {
+                "column_name": {"type": "string"},
+                "ordinal_position": {"type": "integer"},
+                "data_type": {"type": "string"},
+                "column_type": {"type": "string"},
+                "is_nullable": {"type": "string"},
+                "default_value": {},
+                "column_key": {"type": "string"},
+                "extra": {"type": "string"},
+                "column_comment": {"type": "string"}
+              }
+            }
+          },
+          "indexes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index_name": {"type": "string"},
+                "non_unique": {"type": "boolean"},
+                "columns": {"type": "array", "items": {"type": "string"}},
+                "index_type": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "missing_fields": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

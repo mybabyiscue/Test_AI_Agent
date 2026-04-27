@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AutomationPlan",
+  "type": "object",
+  "required": ["run_id", "generated_tests"],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "generated_tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["automation_id", "test_case_id", "path", "method"],
+        "properties": {
+          "automation_id": {
+            "type": "string"
+          },
+          "test_case_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

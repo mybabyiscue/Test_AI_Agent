@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "automation_context.schema.json",
+  "title": "自动化执行 Agent 上下文交付文件",
+  "description": "约束接口获取 Agent 交付给自动化执行 Agent 的标准化接口与数据库上下文。",
+  "type": "object",
+  "required": ["file_info", "requirement_id", "system", "related_apis", "related_database_tables", "missing_fields", "warnings"],
+  "properties": {
+    "file_info": {
+      "type": "object",
+      "required": ["file_name", "purpose", "main_contents", "stage"],
+      "properties": {
+        "file_name": {"type": "string"},
+        "purpose": {"type": "string"},
+        "main_contents": {"type": "string"},
+        "stage": {"type": "string"}
+      }
+    },
+    "requirement_id": {"type": "string"},
+    "system": {"type": "string"},
+    "related_apis": {"type": "array"},
+    "related_database_tables": {"type": "array"},
+    "api_dependencies": {"type": "array"},
+    "data_setup_hints": {"type": "array"},
+    "missing_fields": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

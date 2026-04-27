@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "change_set.schema.json",
+  "title": "知识库差异比对文件",
+  "description": "约束知识库更新时产生的新增、变更、删除差异记录。",
+  "type": "object",
+  "required": ["file_info", "system", "source_type", "source_name", "generated_at", "changes"],
+  "properties": {
+    "file_info": {
+      "type": "object",
+      "required": ["file_name", "purpose", "main_contents", "stage"],
+      "properties": {
+        "file_name": {"type": "string"},
+        "purpose": {"type": "string"},
+        "main_contents": {"type": "string"},
+        "stage": {"type": "string"}
+      }
+    },
+    "system": {"type": "string"},
+    "source_type": {"type": "string", "enum": ["database", "apifox"]},
+    "source_name": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["change_type", "object_type", "object_name"],
+        "properties": {
+          "change_type": {"type": "string", "enum": ["added", "modified", "deleted"]},
+          "object_type": {"type": "string"},
+          "object_name": {"type": "string"},
+          "before": {},
+          "after": {},
+          "description": {"type": "string"}
+        }
+      }
+    }
+  }
+}

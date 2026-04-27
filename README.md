@@ -36,6 +36,92 @@ python run_demo.py --requirement ./examples/requirements/sample_requirement.md -
 pytest -q
 ```
 
+## 配置说明
+
+项目中的真实令牌、数据库密码和测试账号都应该放在本地私有配置里，不要直接写进仓库。
+
+### 1. 平台令牌与数据库凭证
+
+优先使用本地文件：
+
+- `config/credentials.local.json`
+
+可先参考：
+
+- `config/credentials.example.json`
+
+这个本地文件已被 `.gitignore` 忽略，适合填写：
+
+- Apifox、TAPD 等平台个人令牌
+- 各系统数据库连接信息
+
+示例：
+
+```json
+{
+  "platforms": {
+    "apifox": {
+      "default": {
+        "token": "your_apifox_access_token"
+      }
+    },
+    "tapd": {
+      "default": {
+        "token": "your_tapd_personal_token"
+      }
+    }
+  },
+  "databases": {
+    "saas": {
+      "type": "mysql",
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "root",
+      "password": "your_password",
+      "description": "SAAS local database"
+    }
+  }
+}
+```
+
+如果你更习惯环境变量，也可以直接设置：
+
+```bash
+set AI_PIPELINE_CREDENTIAL_APIFOX_TOKEN=your_apifox_access_token
+set AI_PIPELINE_CREDENTIAL_TAPD_TOKEN=your_tapd_personal_token
+set SAAS_DB_HOST=127.0.0.1
+set SAAS_DB_PORT=3306
+set SAAS_DB_USER=root
+set SAAS_DB_PASSWORD=your_password
+```
+
+### 2. 测试环境与登录账号
+
+使用本地文件：
+
+- `config/test_environment.local.json`
+
+可先参考：
+
+- `config/test_environment.example.json`
+
+这个文件同样已被 `.gitignore` 忽略，适合填写：
+
+- API 基础地址
+- 前台/后台登录账号密码
+- 登录接口路径
+- Token 提取路径和请求头配置
+
+启用某个环境配置时，可设置：
+
+```bash
+set AI_PIPELINE_TEST_ENV_PROFILE=local
+```
+
+### 3. 知识源配置
+
+`config/knowledge_sources.example.json` 只用于登记知识来源、项目地址、库名和环境变量名，不应填写真实密码或真实 Token。
+
 ## 目录结构
 
 ```text

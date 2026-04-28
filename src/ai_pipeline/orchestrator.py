@@ -44,8 +44,9 @@ class PipelineOrchestrator:
         if run_dir.exists():
             shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
-        store = ArtifactStore(run_dir)
-        event_log = EventLog(run_dir / "event_log.jsonl")
+        summary_dir = run_dir / "summary"
+        store = ArtifactStore(summary_dir)
+        event_log = EventLog(summary_dir / "run_log.jsonl")
 
         requirement_stage = StageWorkspace(run_id, run_dir, "requirement_agent", event_log)
         precheck_blockers = self._check_required_input_file(requirement_path, self.requirement_agent.agent_name)
@@ -96,6 +97,7 @@ class PipelineOrchestrator:
         api_mapper_stage.write_input_json("test_cases.json", testcase_outputs["test_cases"])
         staged_api_doc_path = self._prepare_api_mapper_input(
             api_mapper_stage,
+            test_cases=testcase_outputs["test_cases"],
             api_doc_path=api_doc_path,
             api_source_url=api_source_url,
         )
@@ -155,19 +157,22 @@ class PipelineOrchestrator:
             testcase_outputs["test_cases"],
             mapping_outputs["endpoint_mapping"],
         )
-        store.write_json("reports/traceability_report.json", traceability_report)
+        store.write_json("traceability_report.json", traceability_report)
         store.write_text(
-            "reports/final_summary.md",
+            "final_summary.md",
             self._build_final_summary(automation_outputs["execution_report"]),
         )
         artifact_inventory = self._build_artifact_inventory(run_dir)
-        store.write_json("reports/artifact_inventory.json", artifact_inventory)
+        store.write_json("artifact_inventory.json", artifact_inventory)
+        store.write_text("file_compliance_check.md", self._build_file_compliance_check(artifact_inventory))
 
         manifest = {
             "run_id": run_id,
             "record_policy": {
                 "record_dir": str(run_dir),
-                "storage_rule": "all_outputs_must_stay_under_requirement_record_dir",
+                "storage_rule": "current_flow_files_must_stay_under_current_run_dir_with_fixed_agent_layout",
+                "global_file_storage_policy": "config/agent_file_storage_policy.json",
+                "policy_effective_notice": "文件管理规范已生效：本次流程所有文件位于专属总文件夹内；每个 Agent 固定使用 input/output/log；全局汇总写入 summary。",
                 "output_file_explanation_rule": {
                     "language": "中文",
                     "required_fields": ["file_name", "purpose", "main_contents", "stage"],
@@ -181,7 +186,7 @@ class PipelineOrchestrator:
                     "api_assets",
                     "automation",
                     "logs",
-                    "reports",
+                    "summary",
                 ],
             },
             "stages": [
@@ -195,9 +200,10 @@ class PipelineOrchestrator:
                 "testcases": "testcase_agent/output/test_cases.json",
                 "api_mapping": "api_mapper_agent/output/endpoint_mapping.json",
                 "automation": "automation_agent/output/automation_plan.json",
-                "report": "reports/traceability_report.json",
-                "record_index": "record_index.md",
-                "artifact_inventory": "reports/artifact_inventory.json",
+                "report": "summary/traceability_report.json",
+                "record_index": "summary/summary.md",
+                "artifact_inventory": "summary/artifact_inventory.json",
+                "file_compliance_check": "summary/file_compliance_check.md",
             },
             "stage_workspaces": {
                 "requirement_agent": "requirement_agent",
@@ -206,9 +212,8 @@ class PipelineOrchestrator:
                 "automation_agent": "automation_agent",
             },
         }
-        manifest_path = run_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        store.write_text("record_index.md", self._build_record_index(manifest, artifact_inventory))
+        manifest_path = store.write_json("manifest.json", manifest)
+        store.write_text("summary.md", self._build_record_index(manifest, artifact_inventory))
         return PipelineRunResult(run_id=run_id, run_dir=run_dir, manifest_path=manifest_path)
 
     def _identify_responsibility(
@@ -325,25 +330,24 @@ class PipelineOrchestrator:
                 "acceptance_criteria.json",
                 "business_flow.md",
                 "risk_points.json",
-                "role_profile.md",
-                "role_profile.json",
             ],
             "testcase_agent": [
                 "responsibility_confirmation.json",
                 "test_cases.json",
                 "test_case_matrix.csv",
                 "coverage_report.md",
-                "role_profile.md",
-                "role_profile.json",
             ],
             "api_mapper_agent": [
                 "responsibility_confirmation.json",
+                "apis/api_source_request.md",
                 "api_catalog.json",
+                "apis/api_catalog.md",
                 "endpoint_mapping.json",
+                "mappings/endpoint_mapping.md",
                 "request_schema.json",
+                "apis/request_schema.md",
                 "dependency_graph.json",
-                "role_profile.md",
-                "role_profile.json",
+                "mappings/dependency_graph.md",
             ],
             "automation_agent": [
                 "responsibility_confirmation.json",
@@ -351,8 +355,6 @@ class PipelineOrchestrator:
                 "generated_tests/test_generated_api_cases.py",
                 "execution_report.json",
                 "allure_report_viewing_guide.md",
-                "role_profile.md",
-                "role_profile.json",
             ],
         }[agent_name]
 
@@ -363,6 +365,7 @@ class PipelineOrchestrator:
             "continuing would cause role overreach or distorted results",
             "downstream stage cannot consume this stage's output",
             *role_profile["quality_gates"],
+            *role_profile.get("blocking_conditions", []),
         ]
 
     def _detect_responsibility_overreach(self, stage: StageWorkspace) -> list[str]:
@@ -659,38 +662,41 @@ class PipelineOrchestrator:
                 "no_default_or_hardcoded_fallback": True,
             },
         }
-        blocking_report_path = store.write_json("reports/blocking_report.json", blocking_report)
+        blocking_report_path = store.write_json("blocking_report.json", blocking_report)
         artifact_inventory = self._build_artifact_inventory(stage.run_dir)
-        store.write_json("reports/artifact_inventory.json", artifact_inventory)
+        store.write_json("artifact_inventory.json", artifact_inventory)
+        store.write_text("file_compliance_check.md", self._build_file_compliance_check(artifact_inventory))
 
         manifest = {
             "run_id": stage.run_id,
             "status": "blocked",
             "blocked_stage": stage.agent_name,
-            "blocking_report": "reports/blocking_report.json",
+            "blocking_report": "summary/blocking_report.json",
             "stages": executed_stages,
             "record_policy": {
                 "record_dir": str(stage.run_dir),
-                "storage_rule": "all_outputs_must_stay_under_requirement_record_dir",
+                "storage_rule": "current_flow_files_must_stay_under_current_run_dir_with_fixed_agent_layout",
+                "global_file_storage_policy": "config/agent_file_storage_policy.json",
+                "policy_effective_notice": "文件管理规范已生效：本次流程所有文件位于专属总文件夹内；每个 Agent 固定使用 input/output/log；全局汇总写入 summary。",
                 "output_file_explanation_rule": {
                     "language": "中文",
                     "required_fields": ["file_name", "purpose", "main_contents", "stage"],
                     "rule": "流程阻断时必须输出阻塞原因，禁止继续推进下游 Agent。",
                 },
                 "file_types": [".json", ".md", ".csv", ".py", "directory"],
-                "required_groups": ["inputs", "logs", "reports"],
+                "required_groups": ["inputs", "logs", "summary"],
             },
             "artifacts": {
-                "blocking_report": "reports/blocking_report.json",
-                "artifact_inventory": "reports/artifact_inventory.json",
+                "blocking_report": "summary/blocking_report.json",
+                "artifact_inventory": "summary/artifact_inventory.json",
+                "file_compliance_check": "summary/file_compliance_check.md",
             },
             "stage_workspaces": {
                 stage.agent_name: stage.agent_name,
             },
         }
-        manifest_path = stage.run_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        store.write_text("record_index.md", self._build_record_index(manifest, artifact_inventory))
+        manifest_path = store.write_json("manifest.json", manifest)
+        store.write_text("summary.md", self._build_record_index(manifest, artifact_inventory))
         return PipelineRunResult(
             run_id=stage.run_id,
             run_dir=stage.run_dir,
@@ -731,6 +737,7 @@ class PipelineOrchestrator:
         self,
         stage: StageWorkspace,
         *,
+        test_cases: dict[str, Any],
         api_doc_path: Path | None,
         api_source_url: str | None,
     ) -> Path:
@@ -741,7 +748,7 @@ class PipelineOrchestrator:
                 project_id = str(api_document["project_id"])
                 source_url = str(api_document.get("source_url") or f"https://app.apifox.com/project/{project_id}")
                 declaration = self.api_mapper_agent.declare_api_source(source_url)
-                detailed_document = self.api_document_resolver.resolve_apifox_project(project_id)
+                selected_endpoints = self.api_mapper_agent.select_endpoints_from_index(test_cases, api_document)
                 stage.write_input_json("api_source_request.json", declaration)
                 stage.write_input_json(
                     "api_source_resolved.json",
@@ -754,6 +761,20 @@ class PipelineOrchestrator:
                     },
                 )
                 stage.write_input_json("api_knowledge_index.json", api_document)
+                stage.write_input_json(
+                    "selected_endpoint_candidates.json",
+                    {
+                        "project_id": project_id,
+                        "selection_mode": "knowledge_index_match",
+                        "endpoints": selected_endpoints,
+                    },
+                )
+                if not selected_endpoints:
+                    raise ValueError("Agent 3 could not confirm any endpoint from the knowledge index; all details remain 待确认.")
+                detailed_document = self.api_document_resolver.resolve_apifox_project_for_endpoints(
+                    project_id=project_id,
+                    endpoints=selected_endpoints,
+                )
                 return stage.write_input_json("api_document.json", detailed_document)
             return staged_api_doc
 
@@ -761,9 +782,32 @@ class PipelineOrchestrator:
             raise ValueError("缺少接口来源，请提供 api_doc_path 或 api_source_url。")
 
         declaration = self.api_mapper_agent.declare_api_source(api_source_url)
-        source, api_document = self.api_document_resolver.resolve_apifox_url(api_source_url)
+        source, api_index = self.api_document_resolver.resolve_apifox_url(api_source_url)
+        if source.resource_type == "api" and source.resource_id:
+            selected_endpoints = self.api_mapper_agent.select_endpoints_from_index(
+                test_cases,
+                api_index,
+                resource_id=source.resource_id,
+            )
+        else:
+            selected_endpoints = self.api_mapper_agent.select_endpoints_from_index(test_cases, api_index)
+        api_document = self.api_document_resolver.resolve_apifox_project_for_endpoints(
+            project_id=source.project_id,
+            endpoints=selected_endpoints,
+        )
         stage.write_input_json("api_source_request.json", declaration)
         stage.write_input_json("api_source_resolved.json", source.to_declaration())
+        stage.write_input_json("api_knowledge_index.json", api_index)
+        stage.write_input_json(
+            "selected_endpoint_candidates.json",
+            {
+                "project_id": source.project_id,
+                "selection_mode": "apifox_index_match",
+                "endpoints": selected_endpoints,
+            },
+        )
+        if not selected_endpoints:
+            raise ValueError("Agent 3 could not confirm any endpoint from the Apifox index; all details remain 待确认.")
         return stage.write_input_json("api_document.json", api_document)
 
     def _is_basic_apifox_index(self, api_document: dict[str, Any]) -> bool:
@@ -987,7 +1031,7 @@ class PipelineOrchestrator:
         }
 
     def _classify_artifact_group(self, relative_path: str) -> str:
-        if relative_path.endswith("/state.json") or "/logs/" in relative_path or relative_path == "event_log.jsonl":
+        if relative_path.endswith("/log/state.json") or "/log/" in relative_path:
             return "logs"
         if "/input/" in relative_path:
             return "inputs"
@@ -999,8 +1043,8 @@ class PipelineOrchestrator:
             return "api_assets"
         if relative_path.startswith("automation_agent/"):
             return "automation"
-        if relative_path.startswith("reports/"):
-            return "reports"
+        if relative_path.startswith("summary/"):
+            return "summary"
         return "record_metadata"
 
     def _describe_artifact(self, relative_path: str, group: str) -> dict[str, str]:
@@ -1018,7 +1062,7 @@ class PipelineOrchestrator:
                 "作为本次需求的中文总目录，帮助最终使用者快速理解每个输出文件的用途。",
                 "包含记录规则、文件类型、产物分组、核心入口文件以及全量产物的中文说明。",
             ),
-            "event_log.jsonl": (
+            "run_log.jsonl": (
                 "记录整条流程中各 Agent 的执行事件，用于排查执行顺序和失败原因。",
                 "按行保存阶段启动、完成、失败等事件，以及对应时间、命令和输出文件信息。",
             ),
@@ -1033,6 +1077,14 @@ class PipelineOrchestrator:
             "role_profile.md": (
                 "保存当前 Agent 的中文角色说明文档，方便人工查看和后续扩展。",
                 "包含 Agent 职责、输入、输出、禁止事项和执行要求。",
+            ),
+            "llm_prompt.md": (
+                "保存当前阶段实际注入模型的最终 Prompt，确保职责注入链路可追踪。",
+                "包含当前 Agent 职责 Markdown、阶段任务模板、阶段输入、上一阶段输出、输出要求和阻塞条件。",
+            ),
+            "llm_invocation.json": (
+                "保存当前阶段的 Prompt 注入元数据，便于核对职责文件、模板文件和执行后端。",
+                "包含 Agent 名称、后端类型、职责 Markdown 路径、Prompt 模板路径、阶段输入摘要和阻塞条件。",
             ),
             "worker_stdout.log": (
                 "保存当前 Agent 子进程的标准输出，用于复盘执行过程。",
@@ -1237,6 +1289,31 @@ class PipelineOrchestrator:
                 ]
             )
         return "\n".join(lines)
+
+    def _build_file_compliance_check(self, artifact_inventory: dict[str, object]) -> str:
+        files = artifact_inventory["files"]
+        unexpected = [
+            file_info["path"]
+            for file_info in files
+            if str(file_info["group"]) == "record_metadata"
+        ]
+        status = "通过" if not unexpected else "存在异常"
+        lines = [
+            "# 文件合规检查",
+            "",
+            "## 检查结论",
+            f"- 状态：{status}",
+            "- 规则：本次流程所有文件必须位于本次流程总文件夹内。",
+            "- 规则：每个 Agent 只能使用自己的 input、output、log 文件夹。",
+            "- 规则：全局汇总文件必须位于 summary 文件夹。",
+            "",
+            "## 异常文件",
+        ]
+        if unexpected:
+            lines.extend(f"- `{path}`" for path in unexpected)
+        else:
+            lines.append("- 无")
+        return "\n".join(lines) + "\n"
 
 
 def run_demo_pipeline(workspace_root: Path) -> PipelineRunResult:

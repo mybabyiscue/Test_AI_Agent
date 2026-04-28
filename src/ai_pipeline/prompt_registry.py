@@ -5,6 +5,14 @@ from pathlib import Path
 from .config import prompts_root
 
 
+AGENT_PROMPT_NAMES: dict[str, str] = {
+    "requirement_agent": "requirement_analyst",
+    "testcase_agent": "testcase_designer",
+    "api_mapper_agent": "api_mapper",
+    "automation_agent": "automation_engineer",
+}
+
+
 class PromptRegistry:
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -24,3 +32,6 @@ class PromptRegistry:
 
     def get(self, role_name: str) -> Path:
         return self._prompts[role_name]
+
+    def get_for_agent(self, agent_name: str) -> Path:
+        return self.get(AGENT_PROMPT_NAMES[agent_name])

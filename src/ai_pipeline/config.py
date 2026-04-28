@@ -11,6 +11,10 @@ def prompts_root() -> Path:
     return project_root() / "prompts"
 
 
+def roles_root() -> Path:
+    return project_root() / "roles"
+
+
 def schemas_root() -> Path:
     return project_root() / "schemas"
 

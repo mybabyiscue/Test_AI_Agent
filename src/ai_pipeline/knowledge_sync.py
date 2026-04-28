@@ -4,12 +4,19 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 import pymysql
 
 from .config import project_root
 from .credentials import CredentialNotFoundError, EnvCredentialProvider
 from .platforms.apifox import ApifoxClient
+
+
+BASIC_API_INDEX_SYNC_MODE = "basic_api_index"
+BASIC_API_INDEX_DETAIL_FETCH_POLICY = (
+    "接口请求头、请求参数、请求体、响应体、示例和 schema 不保存在接口主索引中，"
+    "只能由 Agent3 在处理具体接口时，针对本次涉及的接口一对一从 Apifox、接口文档或代码实现中按需获取，"
+    "不允许在知识库同步阶段全量拉取或保存所有接口详情。"
+)
 
 
 def sync_all_knowledge() -> dict[str, Any]:
@@ -122,12 +129,11 @@ class KnowledgeSyncer:
             credential_profile = str(api_config.get("credential_profile", "default"))
             try:
                 credential = self.credential_provider.get("apifox", profile=credential_profile)
-                openapi = ApifoxClient(credential=credential).export_openapi(project_id)
-                payload = normalize_openapi_to_apifox_knowledge(
+                payload = self._fetch_apifox_basic_index(
                     system=system,
                     project_id=project_id,
                     source_url=source_url,
-                    openapi=openapi,
+                    credential=credential,
                 )
                 path = self.knowledge_root / system / "apis" / f"apifox_project_{project_id}.json"
                 self._write_json(path, payload)
@@ -153,6 +159,23 @@ class KnowledgeSyncer:
                     }
                 )
                 report["summary"]["failed_api_projects"] += 1
+
+    def _fetch_apifox_basic_index(
+        self,
+        *,
+        system: str,
+        project_id: str,
+        source_url: str,
+        credential: Any,
+    ) -> dict[str, Any]:
+        client = ApifoxClient(credential=credential)
+        http_apis = client.list_http_apis(project_id)
+        return normalize_http_apis_to_apifox_knowledge(
+            system=system,
+            project_id=project_id,
+            source_url=source_url,
+            http_apis=http_apis,
+        )
 
     def _record_failed_database(
         self,
@@ -188,6 +211,7 @@ class KnowledgeSyncer:
 
 
 def collect_mysql_schema(system: str, db_name: str, credential: Any) -> dict[str, Any]:
+    collected_at = _now_iso()
     connection = pymysql.connect(
         host=credential.host,
         port=credential.port,
@@ -292,7 +316,7 @@ def collect_mysql_schema(system: str, db_name: str, credential: Any) -> dict[str
         "system": system,
         "source_type": "mysql_schema",
         "db_name": db_name,
-        "collected_at": _now_iso(),
+        "collected_at": collected_at,
         "collector_version": "mvp-v1",
         "tables": tables,
         "missing_fields": [],
@@ -307,6 +331,7 @@ def normalize_openapi_to_apifox_knowledge(
     source_url: str,
     openapi: dict[str, Any],
 ) -> dict[str, Any]:
+    collected_at = _now_iso()
     apis = []
     for path, path_item in sorted(openapi.get("paths", {}).items()):
         if not isinstance(path_item, dict):
@@ -321,6 +346,9 @@ def normalize_openapi_to_apifox_knowledge(
             missing_fields = []
             if not operation.get("description"):
                 missing_fields.append("description")
+            updated_at = operation.get("x-apifox-updated-at") or operation.get("updatedAt") or "待确认"
+            if updated_at == "待确认":
+                missing_fields.append("updated_at")
 
             apis.append(
                 {
@@ -332,6 +360,11 @@ def normalize_openapi_to_apifox_knowledge(
                     "description": str(operation.get("description", "")),
                     "operation_id": str(operation.get("operationId", "")),
                     "tags": tags,
+                    "source": source_url,
+                    "project_id": project_id,
+                    "updated_at": str(updated_at),
+                    "sync_mode": BASIC_API_INDEX_SYNC_MODE,
+                    "detail_fetch_policy": BASIC_API_INDEX_DETAIL_FETCH_POLICY,
                     "missing_fields": missing_fields,
                 }
             )
@@ -350,12 +383,94 @@ def normalize_openapi_to_apifox_knowledge(
         "source_url": source_url,
         "collected_at": _now_iso(),
         "collector_version": "mvp-v1",
-        "sync_mode": "basic_api_index",
-        "detail_fetch_policy": "当前索引不保存请求头、请求参数、请求体、响应体和 components.schemas；处理具体需求时，Agent 3 根据命中的相关接口按需从 Apifox 获取详细契约。",
+        "sync_mode": BASIC_API_INDEX_SYNC_MODE,
+        "detail_fetch_policy": BASIC_API_INDEX_DETAIL_FETCH_POLICY,
         "apis": apis,
         "missing_fields": [],
         "warnings": [],
     }
+
+
+def normalize_http_apis_to_apifox_knowledge(
+    *,
+    system: str,
+    project_id: str,
+    source_url: str,
+    http_apis: list[dict[str, Any]],
+) -> dict[str, Any]:
+    collected_at = _now_iso()
+    apis = [
+        _normalize_http_api_to_basic_index_item(item, project_id=project_id, source_url=source_url)
+        for item in http_apis
+        if isinstance(item, dict)
+    ]
+    return {
+        "file_info": {
+            "file_name": f"apifox_project_{project_id}.json",
+            "purpose": (
+                f"保存 {system} 系统 Apifox 项目 {project_id} 的基础接口索引，"
+                "供候选接口定位与后续按需详情获取使用。"
+            ),
+            "main_contents": (
+                "仅包含基础索引字段：module、folder_path、api_name、method、path、description、"
+                "operation_id、tags、source、project_id、updated_at、sync_mode、detail_fetch_policy、missing_fields。"
+            ),
+            "stage": "接口获取 Agent 接口知识库同步阶段",
+            "view_method": "使用文本编辑器或 JSON 查看器打开，也可由后续 Agent 直接读取。",
+        },
+        "system": system,
+        "platform": "apifox",
+        "project_id": project_id,
+        "source_url": source_url,
+        "collected_at": collected_at,
+        "collector_version": "mvp-v1",
+        "sync_mode": BASIC_API_INDEX_SYNC_MODE,
+        "detail_fetch_policy": BASIC_API_INDEX_DETAIL_FETCH_POLICY,
+        "apis": apis,
+        "missing_fields": [],
+        "warnings": [],
+    }
+
+
+def _normalize_http_api_to_basic_index_item(
+    item: dict[str, Any],
+    *,
+    project_id: str,
+    source_url: str,
+) -> dict[str, Any]:
+    tags = _normalize_tags(item)
+    description = str(item.get("description") or item.get("desc") or "")
+    updated_at = item.get("updatedAt") or item.get("updated_at") or "待确认"
+    missing_fields: list[str] = []
+    if not description:
+        missing_fields.append("description")
+    if updated_at == "待确认":
+        missing_fields.append("updated_at")
+    return {
+        "module": str(item.get("moduleName") or item.get("module") or (tags[0] if tags else "")),
+        "folder_path": tags,
+        "api_name": str(item.get("name") or item.get("summary") or item.get("title") or ""),
+        "method": str(item.get("method", "")).upper(),
+        "path": str(item.get("path", "")),
+        "description": description,
+        "operation_id": str(item.get("operationId") or item.get("operation_id") or ""),
+        "tags": tags,
+        "source": source_url,
+        "project_id": project_id,
+        "updated_at": str(updated_at),
+        "sync_mode": BASIC_API_INDEX_SYNC_MODE,
+        "detail_fetch_policy": BASIC_API_INDEX_DETAIL_FETCH_POLICY,
+        "missing_fields": missing_fields,
+    }
+
+
+def _normalize_tags(item: dict[str, Any]) -> list[str]:
+    raw = item.get("folderPath") or item.get("folder_path") or item.get("tags") or []
+    if isinstance(raw, list):
+        return [str(value) for value in raw]
+    if isinstance(raw, str) and raw:
+        return [raw]
+    return []
 
 
 def build_sync_report_markdown(report: dict[str, Any], *, json_path: Path) -> str:

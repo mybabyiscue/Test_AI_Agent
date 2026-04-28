@@ -19,8 +19,6 @@ def test_prompt_registry_contains_four_agent_templates():
         prompt_path = registry.get(role_name)
         assert prompt_path.exists()
         text = prompt_path.read_text(encoding="utf-8")
-        assert "角色定位" in text
-        assert "输入" in text
-        assert "输出" in text
-        assert "高级工程师" in text
-        assert "严格要求" in text
+        assert "职责由外部注入" in text
+        assert "阶段任务" in text
+        assert "输出格式要求" in text

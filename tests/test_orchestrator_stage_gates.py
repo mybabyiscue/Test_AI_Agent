@@ -24,7 +24,39 @@ class FakeApiDocumentResolver:
     def resolve_apifox_url(self, api_source_url: str):
         from ai_pipeline.platforms.apifox import parse_apifox_url
 
-        return parse_apifox_url(api_source_url), self.resolve_apifox_project("123456")
+        source = parse_apifox_url(api_source_url)
+        return source, self.resolve_apifox_project_index(source.project_id, api_source_url)
+
+    def resolve_apifox_project_index(self, project_id: str, source_url: str | None = None):
+        return {
+            "platform": "apifox",
+            "project_id": project_id,
+            "source_url": source_url or f"https://app.apifox.com/project/{project_id}",
+            "sync_mode": "basic_api_index",
+            "detail_fetch_policy": "index only",
+            "apis": [
+                {
+                    "id": "101",
+                    "api_name": "Create user",
+                    "method": "POST",
+                    "path": "/users",
+                    "module": "User",
+                    "folder_path": ["User"],
+                    "description": "",
+                    "operation_id": "",
+                    "tags": ["User"],
+                    "source": source_url or f"https://app.apifox.com/project/{project_id}",
+                    "project_id": project_id,
+                    "updated_at": "待确认",
+                    "sync_mode": "basic_api_index",
+                    "detail_fetch_policy": "index only",
+                    "missing_fields": ["description", "updated_at"],
+                }
+            ],
+        }
+
+    def resolve_apifox_project_for_endpoints(self, *, project_id: str, endpoints: list[dict[str, str]]):
+        return self.resolve_apifox_project(project_id)
 
 
 def test_pdf_requirement_blocks_after_agent1_when_pdf_snapshot_outputs_are_missing(tmp_path):
@@ -43,8 +75,14 @@ def test_pdf_requirement_blocks_after_agent1_when_pdf_snapshot_outputs_are_missi
         api_doc_path=api_doc_path,
     )
 
-    blocking_report = json.loads((result.run_dir / "reports" / "blocking_report.json").read_text(encoding="utf-8"))
-    requirement_state = json.loads((result.run_dir / "requirement_agent" / "state.json").read_text(encoding="utf-8"))
+    blocking_report = json.loads(
+        (result.run_dir / "summary" / "blocking_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    requirement_state = json.loads(
+        (result.run_dir / "requirement_agent" / "log" / "state.json").read_text(encoding="utf-8")
+    )
 
     assert result.status == "blocked"
     assert blocking_report["blocked_stage"] == "requirement_agent"
@@ -79,8 +117,14 @@ def test_pipeline_blocks_before_agent3_when_test_points_are_missing(tmp_path):
         api_doc_path=api_doc_path,
     )
 
-    blocking_report = json.loads((result.run_dir / "reports" / "blocking_report.json").read_text(encoding="utf-8"))
-    testcase_state = json.loads((result.run_dir / "testcase_agent" / "state.json").read_text(encoding="utf-8"))
+    blocking_report = json.loads(
+        (result.run_dir / "summary" / "blocking_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    testcase_state = json.loads(
+        (result.run_dir / "testcase_agent" / "log" / "state.json").read_text(encoding="utf-8")
+    )
 
     assert result.status == "blocked"
     assert blocking_report["blocked_stage"] == "testcase_agent"
@@ -101,8 +145,14 @@ def test_pipeline_blocks_after_agent3_when_database_context_is_missing(tmp_path)
         require_test_points=False,
     )
 
-    blocking_report = json.loads((result.run_dir / "reports" / "blocking_report.json").read_text(encoding="utf-8"))
-    api_mapper_state = json.loads((result.run_dir / "api_mapper_agent" / "state.json").read_text(encoding="utf-8"))
+    blocking_report = json.loads(
+        (result.run_dir / "summary" / "blocking_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    api_mapper_state = json.loads(
+        (result.run_dir / "api_mapper_agent" / "log" / "state.json").read_text(encoding="utf-8")
+    )
 
     assert result.status == "blocked"
     assert blocking_report["blocked_stage"] == "api_mapper_agent"
@@ -125,7 +175,11 @@ def test_pipeline_blocks_before_agent4_when_excel_template_is_not_confirmed(tmp_
         require_database_context=False,
     )
 
-    blocking_report = json.loads((result.run_dir / "reports" / "blocking_report.json").read_text(encoding="utf-8"))
+    blocking_report = json.loads(
+        (result.run_dir / "summary" / "blocking_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert result.status == "blocked"
     assert blocking_report["blocked_stage"] == "automation_agent"
@@ -153,7 +207,11 @@ def test_pipeline_blocks_before_agent1_when_responsibility_identification_finds_
             encoding="utf-8"
         )
     )
-    blocking_report = json.loads((result.run_dir / "reports" / "blocking_report.json").read_text(encoding="utf-8"))
+    blocking_report = json.loads(
+        (result.run_dir / "summary" / "blocking_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert result.status == "blocked"
     assert blocking_report["blocked_at"] == "before"
@@ -162,4 +220,4 @@ def test_pipeline_blocks_before_agent1_when_responsibility_identification_finds_
     assert confirmation["responsibility_self_check"]["input_is_sufficient"] is False
     assert confirmation["responsibility_self_check"]["must_block"] is True
     assert confirmation["missing_inputs_or_preconditions"]
-    assert not (result.run_dir / "requirement_agent" / "logs" / "worker_stdout.log").exists()
+    assert not (result.run_dir / "requirement_agent" / "log" / "worker_stdout.log").exists()

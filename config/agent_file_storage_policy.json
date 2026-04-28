@@ -1,0 +1,333 @@
+{
+  "policy_name": "agent_file_storage_policy",
+  "version": "2026-04-27",
+  "status": "enabled",
+  "effective_scope": "all_new_flows_and_all_agents",
+  "must_announce_before_each_new_flow": true,
+  "total_directory_policy": {
+    "rule": "每一次启动新的流程时，必须先创建本次流程专属总文件夹；本次流程产生的所有文件只能存放在该总文件夹内。",
+    "forbidden": [
+      "不允许在项目根目录创建流程产物。",
+      "不允许在临时目录创建流程产物。",
+      "不允许在本次流程总文件夹之外创建流程产物。",
+      "不允许因为新流程重新设计 Agent 子文件夹名称、input/output/log 结构、文件名称或文件数量。"
+    ]
+  },
+  "fixed_directory_layout": {
+    "root": "workspace/runs/<run_id>",
+    "agents": {
+      "requirement_agent": {
+        "input_dir": "requirement_agent/input",
+        "output_dir": "requirement_agent/output",
+        "log_dir": "requirement_agent/log"
+      },
+      "testcase_agent": {
+        "input_dir": "testcase_agent/input",
+        "output_dir": "testcase_agent/output",
+        "log_dir": "testcase_agent/log"
+      },
+      "api_mapper_agent": {
+        "input_dir": "api_mapper_agent/input",
+        "output_dir": "api_mapper_agent/output",
+        "log_dir": "api_mapper_agent/log"
+      },
+      "automation_agent": {
+        "input_dir": "automation_agent/input",
+        "output_dir": "automation_agent/output",
+        "log_dir": "automation_agent/log"
+      }
+    },
+    "summary_dir": "summary"
+  },
+  "fixed_file_manifest": {
+    "requirement_agent": {
+      "input": [
+        {
+          "name": "source_requirement.md",
+          "purpose": "本 Agent 的原始需求输入或从原始材料提取后的需求文本。"
+        }
+      ],
+      "output": [
+        {
+          "name": "responsibility_confirmation.md",
+          "purpose": "职责确认与输入充分性说明。"
+        },
+        {
+          "name": "requirement_model.json",
+          "purpose": "结构化需求模型。"
+        },
+        {
+          "name": "requirement_analysis.md",
+          "purpose": "需求分析说明。"
+        },
+        {
+          "name": "business_flow.md",
+          "purpose": "业务流程说明。"
+        },
+        {
+          "name": "risk_points.json",
+          "purpose": "风险点与待确认项。"
+        },
+        {
+          "name": "completion_validation.md",
+          "purpose": "本 Agent 完成校验。"
+        }
+      ],
+      "log": [
+        {
+          "name": "state.json",
+          "purpose": "本 Agent 执行状态、输入输出清单和执行元信息。"
+        },
+        {
+          "name": "stage.log",
+          "purpose": "本 Agent 阶段执行日志。"
+        },
+        {
+          "name": "worker_stdout.log",
+          "purpose": "本 Agent 子进程标准输出。"
+        },
+        {
+          "name": "worker_stderr.log",
+          "purpose": "本 Agent 子进程错误输出。"
+        }
+      ]
+    },
+    "testcase_agent": {
+      "input": [
+        {
+          "name": "requirement_model.json",
+          "purpose": "来自 Agent1 的结构化需求模型。"
+        },
+        {
+          "name": "risk_points.json",
+          "purpose": "来自 Agent1 的风险点与待确认项。"
+        }
+      ],
+      "output": [
+        {
+          "name": "responsibility_confirmation.md",
+          "purpose": "职责确认与输入充分性说明。"
+        },
+        {
+          "name": "test_points.json",
+          "purpose": "测试点清单。"
+        },
+        {
+          "name": "test_cases.json",
+          "purpose": "结构化测试用例。"
+        },
+        {
+          "name": "test_cases.md",
+          "purpose": "人工可读测试用例说明。"
+        },
+        {
+          "name": "coverage_report.md",
+          "purpose": "覆盖度报告。"
+        },
+        {
+          "name": "completion_validation.md",
+          "purpose": "本 Agent 完成校验。"
+        }
+      ],
+      "log": [
+        {
+          "name": "state.json",
+          "purpose": "本 Agent 执行状态、输入输出清单和执行元信息。"
+        },
+        {
+          "name": "stage.log",
+          "purpose": "本 Agent 阶段执行日志。"
+        },
+        {
+          "name": "worker_stdout.log",
+          "purpose": "本 Agent 子进程标准输出。"
+        },
+        {
+          "name": "worker_stderr.log",
+          "purpose": "本 Agent 子进程错误输出。"
+        }
+      ]
+    },
+    "api_mapper_agent": {
+      "input": [
+        {
+          "name": "requirement_model.json",
+          "purpose": "来自 Agent1 的结构化需求模型。"
+        },
+        {
+          "name": "test_cases.json",
+          "purpose": "来自 Agent2 的结构化测试用例。"
+        },
+        {
+          "name": "api_source_snapshot.json",
+          "purpose": "接口知识库、OpenAPI 或 Apifox 详情输入快照。"
+        }
+      ],
+      "output": [
+        {
+          "name": "responsibility_confirmation.md",
+          "purpose": "职责确认与输入充分性说明。"
+        },
+        {
+          "name": "api_contract_full_pack.md",
+          "purpose": "接口契约主文档。"
+        },
+        {
+          "name": "api_catalog.json",
+          "purpose": "结构化接口资产目录。"
+        },
+        {
+          "name": "endpoint_mapping.json",
+          "purpose": "测试用例与接口映射关系。"
+        },
+        {
+          "name": "missing_interface_report.md",
+          "purpose": "接口缺失、冲突和阻塞项说明。"
+        },
+        {
+          "name": "completion_validation.md",
+          "purpose": "本 Agent 完成校验。"
+        }
+      ],
+      "log": [
+        {
+          "name": "state.json",
+          "purpose": "本 Agent 执行状态、输入输出清单和执行元信息。"
+        },
+        {
+          "name": "stage.log",
+          "purpose": "本 Agent 阶段执行日志。"
+        },
+        {
+          "name": "worker_stdout.log",
+          "purpose": "本 Agent 子进程标准输出。"
+        },
+        {
+          "name": "worker_stderr.log",
+          "purpose": "本 Agent 子进程错误输出。"
+        }
+      ]
+    },
+    "automation_agent": {
+      "input": [
+        {
+          "name": "test_cases.json",
+          "purpose": "来自 Agent2 的结构化测试用例。"
+        },
+        {
+          "name": "endpoint_mapping.json",
+          "purpose": "来自 Agent3 的接口映射关系。"
+        },
+        {
+          "name": "execution_template.xlsx",
+          "purpose": "经用户确认的自动化执行输入模板；未确认时不得生成脚本或执行接口。"
+        }
+      ],
+      "output": [
+        {
+          "name": "responsibility_confirmation.md",
+          "purpose": "职责确认与输入充分性说明。"
+        },
+        {
+          "name": "automation_readiness_report.md",
+          "purpose": "自动化可执行性评估。"
+        },
+        {
+          "name": "automation_plan.json",
+          "purpose": "自动化执行计划。"
+        },
+        {
+          "name": "execution_report.json",
+          "purpose": "自动化执行报告。"
+        },
+        {
+          "name": "blocking_report.md",
+          "purpose": "无法执行时的阻塞说明。"
+        },
+        {
+          "name": "completion_validation.md",
+          "purpose": "本 Agent 完成校验。"
+        }
+      ],
+      "log": [
+        {
+          "name": "state.json",
+          "purpose": "本 Agent 执行状态、输入输出清单和执行元信息。"
+        },
+        {
+          "name": "execution.log",
+          "purpose": "自动化执行日志。"
+        },
+        {
+          "name": "worker_stdout.log",
+          "purpose": "本 Agent 子进程标准输出。"
+        },
+        {
+          "name": "worker_stderr.log",
+          "purpose": "本 Agent 子进程错误输出。"
+        }
+      ]
+    },
+    "summary": {
+      "files": [
+        {
+          "name": "summary.md",
+          "purpose": "本次流程总览、文件规范声明、Agent 列表和最终结论。"
+        },
+        {
+          "name": "manifest.json",
+          "purpose": "本次流程固定目录、固定文件清单和产物索引。"
+        },
+        {
+          "name": "run_log.jsonl",
+          "purpose": "本次流程全局事件日志。"
+        },
+        {
+          "name": "artifact_inventory.json",
+          "purpose": "本次流程产物清单。"
+        },
+        {
+          "name": "traceability_report.json",
+          "purpose": "需求、用例、接口和自动化结果追溯报告。"
+        },
+        {
+          "name": "final_summary.md",
+          "purpose": "流程成功完成后的最终摘要。"
+        },
+        {
+          "name": "blocking_report.json",
+          "purpose": "流程阻塞时的阻塞报告；仅在阻塞流程中生成。"
+        },
+        {
+          "name": "file_compliance_check.md",
+          "purpose": "执行完成后的文件路径、文件数量和目录结构合规检查。"
+        }
+      ]
+    }
+  },
+  "before_flow_start_must_declare": [
+    "文件管理规范已生效。",
+    "本次流程总文件夹名称。",
+    "本次流程涉及的 Agent 列表。",
+    "每个 Agent 固定的目录结构。",
+    "每个 Agent 的 input、output、log 中允许生成或读取的固定文件名称和文件数量。"
+  ],
+  "change_control": {
+    "default": "执行过程中不允许随意新增、删除、减少、重命名文件或文件夹。",
+    "required_explanation_fields": [
+      "变更原因",
+      "涉及的 Agent",
+      "原固定目录或文件名",
+      "变更后的目录或文件名",
+      "变更前后的文件数量变化",
+      "是否影响后续流程",
+      "是否需要同步更新全局规则/全局配置"
+    ]
+  },
+  "after_flow_completion_check": [
+    "所有文件均位于本次流程总文件夹内。",
+    "每个 Agent 均只使用自己的 input、output、log 文件夹。",
+    "文件名称、文件数量、目录结构与流程开始前声明的固定规则一致。",
+    "不存在多余文件、临时文件、未归属文件或错误路径文件。"
+  ]
+}

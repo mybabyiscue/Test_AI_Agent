@@ -19,13 +19,61 @@ class ApiMapperAgent:
             raise ValueError("Agent 3 currently requires an Apifox URL as the API source.")
         return parse_apifox_url(api_source_url).to_declaration()
 
+    def select_endpoints_from_index(
+        self,
+        test_cases: dict[str, Any],
+        api_index: dict[str, Any],
+        *,
+        resource_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        indexed_operations = [
+            {
+                "id": str(item.get("id", "")),
+                "path": str(item.get("path", "")),
+                "method": str(item.get("method", "")).upper(),
+                "summary": str(item.get("api_name", "")),
+                "description": str(item.get("description", "")),
+                "module": str(item.get("module", "")),
+            }
+            for item in api_index.get("apis", [])
+            if isinstance(item, dict)
+        ]
+        if resource_id:
+            matched = [item for item in indexed_operations if item.get("id") == str(resource_id)]
+            if matched:
+                return [{"id": item["id"], "method": item["method"], "path": item["path"]} for item in matched]
+
+        selected = []
+        seen: set[tuple[str, str]] = set()
+        for case in test_cases.get("cases", []):
+            if not isinstance(case, dict):
+                continue
+            operation = self._select_operation(case, indexed_operations, allow_fallback=False)
+            if not operation.get("path") or not operation.get("method"):
+                continue
+            key = (str(operation["method"]), str(operation["path"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(
+                {
+                    "id": str(operation.get("id", "")),
+                    "method": str(operation["method"]),
+                    "path": str(operation["path"]),
+                }
+            )
+        if not selected and len(indexed_operations) == 1:
+            only = indexed_operations[0]
+            return [{"id": str(only.get("id", "")), "method": str(only.get("method", "")), "path": str(only.get("path", ""))}]
+        return selected
+
     def run(self, test_cases: dict[str, Any], api_document: dict[str, Any]) -> dict[str, object]:
         paths = api_document.get("paths", {})
         operations = self._collect_operations(api_document)
 
         mappings = []
         for index, case in enumerate(test_cases["cases"], start=1):
-            selected_operation = self._select_operation(case, operations)
+            selected_operation = self._select_operation(case, operations, allow_fallback=True)
             payload = self._normalize_payload(selected_operation, case.get("payload", {}))
             mappings.append(
                 {
@@ -42,8 +90,8 @@ class ApiMapperAgent:
                     "path_params": selected_operation.get("path_params", []),
                     "request_body": selected_operation.get("request_body", {}),
                     "response_body": selected_operation.get("response_body", {}),
-                    "auth_type": selected_operation.get("auth_type", "not_declared"),
-                    "interface_detail_status": selected_operation.get("detail_status", "missing_detail"),
+                    "auth_type": selected_operation.get("auth_type", "待确认"),
+                    "interface_detail_status": selected_operation.get("detail_status", "待确认"),
                     "epic": "api_mapping",
                     "feature": "cart" if "CART" in str(case["test_case_id"]) else "api",
                     "story": case.get("title", case["test_case_id"]),
@@ -64,7 +112,8 @@ class ApiMapperAgent:
                 "selected_interfaces": selected_interfaces,
                 "detail_source_policy": {
                     "knowledge_base_role": "locate candidate interfaces only",
-                    "apifox_token_role": "fetch full interface details before output",
+                    "detail_fetch_scope": "only interfaces involved in this run",
+                    "apifox_token_role": "fetch full interface details one by one before output",
                     "required_detail_fields": [
                         "headers",
                         "query_params",
@@ -74,6 +123,7 @@ class ApiMapperAgent:
                         "auth_type",
                         "description",
                     ],
+                    "unknown_field_policy": "mark as 待确认",
                 },
             },
             "endpoint_mapping": {
@@ -134,7 +184,13 @@ class ApiMapperAgent:
                 )
         return operations
 
-    def _select_operation(self, case: dict[str, Any], operations: list[dict[str, Any]]) -> dict[str, Any]:
+    def _select_operation(
+        self,
+        case: dict[str, Any],
+        operations: list[dict[str, Any]],
+        *,
+        allow_fallback: bool = True,
+    ) -> dict[str, Any]:
         if not operations:
             return {
                 "path": "/users",
@@ -147,8 +203,8 @@ class ApiMapperAgent:
                 "path_params": [],
                 "request_body": {},
                 "response_body": {},
-                "auth_type": "not_declared",
-                "detail_status": "missing_detail",
+                "auth_type": "待确认",
+                "detail_status": "待确认",
             }
 
         intent = str(case.get("related_api_intent", ""))
@@ -176,7 +232,9 @@ class ApiMapperAgent:
                 matched = self._find_operation(operations, method, operation_keywords)
                 if matched:
                     return matched
-        return operations[0]
+        if allow_fallback:
+            return operations[0]
+        return {}
 
     def _find_operation(
         self,
@@ -253,8 +311,8 @@ class ApiMapperAgent:
             "path_params": mapping.get("path_params", []),
             "request_body": mapping.get("request_body", {}),
             "response_body": mapping.get("response_body", {}),
-            "auth_type": mapping.get("auth_type", "not_declared"),
-            "interface_detail_status": mapping.get("interface_detail_status", "missing_detail"),
+            "auth_type": mapping.get("auth_type", "待确认"),
+            "interface_detail_status": mapping.get("interface_detail_status", "待确认"),
         }
 
     def _module_name(self, operation: dict[str, Any]) -> str:
@@ -376,9 +434,9 @@ class ApiMapperAgent:
             return "openapi_security"
         if self._params_by_location(parameters, "header"):
             return "header_context"
-        return "not_declared"
+        return "待确认"
 
     def _detail_status(self, request_body: Any, response_body: Any, parameters: Any) -> str:
         if request_body or response_body or parameters:
             return "detail_fetched_from_apifox_openapi"
-        return "missing_detail"
+        return "待确认"

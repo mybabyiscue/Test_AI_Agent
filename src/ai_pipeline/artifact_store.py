@@ -54,18 +54,18 @@ class StageWorkspace:
     root: Path = field(init=False)
     input_dir: Path = field(init=False)
     output_dir: Path = field(init=False)
-    logs_dir: Path = field(init=False)
+    log_dir: Path = field(init=False)
     state_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
         self.root = self.run_dir / self.agent_name
         self.input_dir = self.root / "input"
         self.output_dir = self.root / "output"
-        self.logs_dir = self.root / "logs"
-        self.state_path = self.root / "state.json"
+        self.log_dir = self.root / "log"
+        self.state_path = self.log_dir / "state.json"
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def copy_input(self, source: Path, relative_path: str | None = None) -> Path:
         target_name = relative_path or source.name
@@ -87,9 +87,15 @@ class StageWorkspace:
         return target
 
     def write_log(self, filename: str, content: str) -> Path:
-        target = self.logs_dir / filename
+        target = self.log_dir / filename
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+        return target
+
+    def write_log_json(self, filename: str, payload: dict[str, Any]) -> Path:
+        target = self.log_dir / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
 
     def update_state(

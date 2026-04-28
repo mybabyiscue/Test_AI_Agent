@@ -13,12 +13,14 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
     assert result.run_id == "demo-run"
     assert result.run_dir.exists()
     assert result.manifest_path.exists()
-    assert (result.run_dir / "record_index.md").exists()
+    summary_dir = result.run_dir / "summary"
+    assert (summary_dir / "summary.md").exists()
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["run_id"] == "demo-run"
     assert manifest["record_policy"]["record_dir"] == str(result.run_dir)
-    assert manifest["record_policy"]["storage_rule"] == "all_outputs_must_stay_under_requirement_record_dir"
+    assert manifest["record_policy"]["storage_rule"] == "current_flow_files_must_stay_under_current_run_dir_with_fixed_agent_layout"
+    assert manifest["record_policy"]["global_file_storage_policy"] == "config/agent_file_storage_policy.json"
     assert manifest["record_policy"]["file_types"] == [".json", ".md", ".csv", ".py", "directory"]
     assert manifest["record_policy"]["required_groups"] == [
         "inputs",
@@ -27,7 +29,7 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
         "api_assets",
         "automation",
         "logs",
-        "reports",
+        "summary",
     ]
     assert manifest["stages"] == [
         "requirement_analysis",
@@ -35,26 +37,31 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
         "api_mapping",
         "automation_execution",
     ]
-    assert (result.run_dir / "event_log.jsonl").exists()
+    assert (summary_dir / "run_log.jsonl").exists()
 
     required_artifacts = [
         result.run_dir / "requirement_agent" / "output" / "requirement_model.json",
         result.run_dir / "testcase_agent" / "output" / "test_cases.json",
+        result.run_dir / "api_mapper_agent" / "output" / "apis" / "api_source_request.md",
+        result.run_dir / "api_mapper_agent" / "output" / "apis" / "api_catalog.md",
+        result.run_dir / "api_mapper_agent" / "output" / "mappings" / "endpoint_mapping.md",
+        result.run_dir / "api_mapper_agent" / "output" / "apis" / "request_schema.md",
+        result.run_dir / "api_mapper_agent" / "output" / "mappings" / "dependency_graph.md",
         result.run_dir / "api_mapper_agent" / "output" / "endpoint_mapping.json",
         result.run_dir / "automation_agent" / "output" / "automation_plan.json",
         result.run_dir / "automation_agent" / "output" / "generated_tests" / "test_generated_api_cases.py",
         result.run_dir / "automation_agent" / "output" / "execution_report.json",
         result.run_dir / "automation_agent" / "output" / "allure_report_viewing_guide.md",
-        result.run_dir / "reports" / "traceability_report.json",
-        result.run_dir / "reports" / "artifact_inventory.json",
-        result.run_dir / "record_index.md",
+        summary_dir / "traceability_report.json",
+        summary_dir / "artifact_inventory.json",
+        summary_dir / "summary.md",
     ]
 
     for artifact_path in required_artifacts:
         assert artifact_path.exists(), f"Missing artifact: {artifact_path}"
 
     artifact_inventory = json.loads(
-        (result.run_dir / "reports" / "artifact_inventory.json").read_text(encoding="utf-8")
+        (summary_dir / "artifact_inventory.json").read_text(encoding="utf-8")
     )
     assert artifact_inventory["explanation_rule"]["language"] == "中文"
     assert artifact_inventory["explanation_rule"]["required_fields"] == [
@@ -69,7 +76,7 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
         assert file_info["main_contents"]
         assert file_info["stage"]
 
-    record_index_text = (result.run_dir / "record_index.md").read_text(encoding="utf-8")
+    record_index_text = (summary_dir / "summary.md").read_text(encoding="utf-8")
     assert "文件名称" in record_index_text
     assert "文件作用" in record_index_text
     assert "主要内容" in record_index_text
@@ -84,24 +91,37 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
         stage_dir = result.run_dir / stage_dir_name
         assert (stage_dir / "input").exists()
         assert (stage_dir / "output").exists()
-        assert (stage_dir / "logs").exists()
-        assert (stage_dir / "state.json").exists()
-        state = json.loads((stage_dir / "state.json").read_text(encoding="utf-8"))
+        assert (stage_dir / "log").exists()
+        assert (stage_dir / "log" / "state.json").exists()
+        state = json.loads((stage_dir / "log" / "state.json").read_text(encoding="utf-8"))
         assert state["status"] == "success"
         assert state["agent_name"] == stage_dir_name
         assert state["output_files"]
         assert state["role_profile"]["language"] == "中文"
         assert state["role_profile"]["strict_mode"] is True
         assert state["role_profile"]["title"].startswith("高级")
-        assert (stage_dir / "output" / "role_profile.json").exists()
-        role_profile_md = stage_dir / "output" / "role_profile.md"
+        assert not (stage_dir / "output" / "role_profile.json").exists()
+        assert not (stage_dir / "output" / "role_profile.md").exists()
+        assert (stage_dir / "log" / "role_profile.json").exists()
+        assert (stage_dir / "log" / "llm_prompt.md").exists()
+        assert (stage_dir / "log" / "llm_invocation.json").exists()
+        role_profile_md = stage_dir / "log" / "role_profile.md"
         assert role_profile_md.exists()
         role_profile_text = role_profile_md.read_text(encoding="utf-8")
         assert role_profile_text.startswith("# 高级")
         assert "## 职责" in role_profile_text
-        assert "## 输入" in role_profile_text
-        assert "## 输出" in role_profile_text
-        assert "## 禁止" in role_profile_text
+        assert "## 可读取输入" in role_profile_text
+        assert "## 必须输出" in role_profile_text
+        assert "## 禁止事项" in role_profile_text
+        llm_prompt_text = (stage_dir / "log" / "llm_prompt.md").read_text(encoding="utf-8")
+        llm_invocation = json.loads((stage_dir / "log" / "llm_invocation.json").read_text(encoding="utf-8"))
+        assert stage_dir_name in llm_prompt_text
+        assert "当前 Agent 职责说明" in llm_prompt_text
+        assert "当前阶段输出要求" in llm_prompt_text
+        assert llm_invocation["agent_name"] == stage_dir_name
+        assert llm_invocation["backend"] == "local_python_backend"
+        assert llm_invocation["role_markdown_path"].replace("\\", "/").endswith(f"roles/{stage_dir_name}.md")
+        assert llm_invocation["prompt_template_path"].endswith(".md")
 
     execution_report = json.loads(
         (result.run_dir / "automation_agent" / "output" / "execution_report.json").read_text(encoding="utf-8")
@@ -113,12 +133,23 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
     assert execution_report["allure_html_report"]["index_path"].endswith("index.html")
     assert execution_report["allure_viewing_guide"].endswith("allure_report_viewing_guide.md")
 
-    event_lines = (result.run_dir / "event_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    event_lines = (summary_dir / "run_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(event_lines) >= 8
     first_event = json.loads(event_lines[0])
     last_event = json.loads(event_lines[-1])
     assert first_event["event"] == "responsibility_identified"
     assert last_event["event"] == "completion_validated"
+
+    api_catalog_md = (
+        result.run_dir / "api_mapper_agent" / "output" / "apis" / "api_catalog.md"
+    ).read_text(encoding="utf-8")
+    assert "# API Catalog" in api_catalog_md
+    assert "## Interface" in api_catalog_md
+
+    endpoint_mapping_md = (
+        result.run_dir / "api_mapper_agent" / "output" / "mappings" / "endpoint_mapping.md"
+    ).read_text(encoding="utf-8")
+    assert "# Endpoint Mapping" in endpoint_mapping_md
 
 
 def test_generated_api_tests_reserve_allure_report_annotations(tmp_path):
@@ -289,7 +320,7 @@ def test_demo_pipeline_rebuilds_existing_run_directory(tmp_path):
 
     assert result.run_dir == stale_run_dir
     assert not stale_file.exists()
-    assert (result.run_dir / "manifest.json").exists()
+    assert (result.run_dir / "summary" / "manifest.json").exists()
 
 
 def test_stage_state_records_subprocess_execution_metadata(tmp_path):
@@ -301,7 +332,7 @@ def test_stage_state_records_subprocess_execution_metadata(tmp_path):
         "api_mapper_agent",
         "automation_agent",
     ]:
-        state = json.loads((result.run_dir / stage_dir_name / "state.json").read_text(encoding="utf-8"))
+        state = json.loads((result.run_dir / stage_dir_name / "log" / "state.json").read_text(encoding="utf-8"))
         assert state["executor"]["mode"] == "subprocess"
         assert state["executor"]["exit_code"] == 0
         assert state["executor"]["command"]
@@ -349,7 +380,7 @@ def test_each_stage_runs_responsibility_lifecycle_before_and_after_execution(tmp
 
     event_lines = [
         json.loads(line)
-        for line in (result.run_dir / "event_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        for line in (result.run_dir / "summary" / "run_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
     ]
     events_by_stage: dict[str, list[str]] = {}
     for event in event_lines:

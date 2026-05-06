@@ -34,6 +34,7 @@
 
 ## 必须输出
 
+- test_points.json
 - test_cases.json
 - test_case_matrix.csv
 - coverage_report.md

@@ -1,18 +1,68 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from typing import Any
 
+from ..config import project_root
 from ..platforms.apifox import parse_apifox_url
-from .role_profiles import get_role_profile
+from .base_agent import BaseAgent
 
 
-class ApiMapperAgent:
+INTENT_TABLE_MAP: dict[str, list[str]] = {
+    "save_contact_way": [
+        "wework_contact_way",
+        "wework_acquisition_rule_user_config",
+    ],
+    "save_acquisition_link": [
+        "wework_customer_acquisition_link",
+        "wework_acquisition_rule_user_config",
+    ],
+    "list_online_status": [
+        "wework_acquisition_user_online_status",
+    ],
+    "change_online_status": [
+        "wework_acquisition_user_online_status",
+        "wework_acquisition_user_online_log",
+    ],
+    "sync_org": [
+        "wework_acquisition_rule_user_config",
+        "wework_acquisition_user_online_status",
+    ],
+}
+
+INTENT_FIELD_HINTS: dict[str, list[str]] = {
+    "save_contact_way": ["next_auto_enable_time", "enable"],
+    "save_acquisition_link": ["next_auto_enable_time", "enable"],
+    "list_online_status": ["status", "source"],
+    "change_online_status": ["status", "source"],
+    "sync_org": ["next_auto_enable_time", "status"],
+}
+
+INTENT_PREFERRED_PATHS: dict[str, list[str]] = {
+    "save_contact_way": ["/contact/way/save", "/groupcontact/way/save"],
+    "save_acquisition_link": ["/acquisition/link/saveOrUpdate"],
+    "list_online_status": ["/acquisition/user/online/list"],
+    "change_online_status": ["/acquisition/user/online/change"],
+    "sync_org": ["/cp/org/synchro", "/cp/org/synchro/{corpId}"],
+}
+
+PATH_TABLE_HINTS: list[tuple[str, str]] = [
+    ("contact/way", "wework_contact_way"),
+    ("acquisition/link", "wework_customer_acquisition_link"),
+    ("online/list", "wework_acquisition_user_online_status"),
+    ("online/change", "wework_acquisition_user_online_status"),
+]
+
+
+class ApiMapperAgent(BaseAgent):
     agent_name = "api_mapper_agent"
     stage_name = "api_mapping"
 
-    def role_profile(self) -> dict[str, object]:
-        return get_role_profile(self.agent_name)
+    def __init__(self, knowledge_root: Path | None = None, default_database_scope: str = "saas") -> None:
+        self.knowledge_root = knowledge_root or project_root() / "knowledge_base"
+        self.default_database_scope = default_database_scope
 
     def declare_api_source(self, api_source_url: str) -> dict[str, object]:
         if "apifox" not in api_source_url.lower():
@@ -65,9 +115,38 @@ class ApiMapperAgent:
         if not selected and len(indexed_operations) == 1:
             only = indexed_operations[0]
             return [{"id": str(only.get("id", "")), "method": str(only.get("method", "")), "path": str(only.get("path", ""))}]
+        if not selected:
+            preferred = [
+                item
+                for item in indexed_operations
+                if any(
+                    keyword in item.get("path", "")
+                    for keyword in [
+                        "/contact/way/save",
+                        "/acquisition/link/saveOrUpdate",
+                        "/acquisition/user/online/list",
+                        "/acquisition/user/online/change",
+                    ]
+                )
+            ]
+            fallback_items = preferred[:6] or indexed_operations[:6]
+            return [
+                {
+                    "id": str(item.get("id", "")),
+                    "method": str(item.get("method", "")),
+                    "path": str(item.get("path", "")),
+                }
+                for item in fallback_items
+            ]
         return selected
 
-    def run(self, test_cases: dict[str, Any], api_document: dict[str, Any]) -> dict[str, object]:
+    def run(
+        self,
+        test_cases: dict[str, Any],
+        api_document: dict[str, Any],
+        *,
+        database_scope: str | None = None,
+    ) -> dict[str, object]:
         paths = api_document.get("paths", {})
         operations = self._collect_operations(api_document)
 
@@ -78,7 +157,7 @@ class ApiMapperAgent:
             mappings.append(
                 {
                     "test_case_id": case["test_case_id"],
-                    "automation_id": f"AUTO-CASE-00{index}",
+                    "automation_id": f"AUTO-CASE-{index:03d}",
                     "title": case.get("title", case["test_case_id"]),
                     "path": selected_operation["path"],
                     "method": selected_operation["method"],
@@ -90,8 +169,8 @@ class ApiMapperAgent:
                     "path_params": selected_operation.get("path_params", []),
                     "request_body": selected_operation.get("request_body", {}),
                     "response_body": selected_operation.get("response_body", {}),
-                    "auth_type": selected_operation.get("auth_type", "待确认"),
-                    "interface_detail_status": selected_operation.get("detail_status", "待确认"),
+                    "auth_type": selected_operation.get("auth_type", "pending_confirmation"),
+                    "interface_detail_status": selected_operation.get("detail_status", "pending_confirmation"),
                     "epic": "api_mapping",
                     "feature": "cart" if "CART" in str(case["test_case_id"]) else "api",
                     "story": case.get("title", case["test_case_id"]),
@@ -104,6 +183,13 @@ class ApiMapperAgent:
             [self._selected_interface_from_mapping(mapping) for mapping in mappings]
         )
         first_mapping = mappings[0] if mappings else {"path": "/users", "method": "POST"}
+        request_schema = self._build_request_schema_output(selected_interfaces)
+        resolved_database_scope = database_scope or self.default_database_scope
+        database_context = self._build_database_context(
+            test_cases=test_cases,
+            mappings=mappings,
+            database_scope=resolved_database_scope,
+        )
 
         return {
             "api_catalog": {
@@ -123,18 +209,21 @@ class ApiMapperAgent:
                         "auth_type",
                         "description",
                     ],
-                    "unknown_field_policy": "mark as 待确认",
+                    "unknown_field_policy": "mark as pending_confirmation",
                 },
             },
             "endpoint_mapping": {
                 "requirement_id": test_cases["requirement_id"],
                 "mappings": mappings,
             },
-            "request_schema": {
+            "request_schema": request_schema
+            if request_schema["interfaces"]
+            else {
                 "path": first_mapping["path"],
                 "method": first_mapping["method"],
                 "body_type": "application/json",
                 "required_fields": self._infer_required_fields(first_mapping),
+                "interfaces": [],
             },
             "dependency_graph": {
                 "edges": [],
@@ -142,7 +231,254 @@ class ApiMapperAgent:
                     "Agent 3 must locate candidate interfaces from knowledge base, then fetch and expand full details from Apifox before output."
                 ],
             },
+            "database_catalog": database_context["database_catalog"],
+            "database_mapping": database_context["database_mapping"],
+            "missing_database_report": database_context["missing_database_report"],
         }
+
+    def _build_database_context(
+        self,
+        *,
+        test_cases: dict[str, Any],
+        mappings: list[dict[str, Any]],
+        database_scope: str,
+    ) -> dict[str, object]:
+        table_catalog = self._load_database_table_catalog(database_scope)
+        mapping_by_case_id = {mapping["test_case_id"]: mapping for mapping in mappings if isinstance(mapping, dict)}
+        matched_tables: dict[tuple[str, str], dict[str, Any]] = {}
+        database_mappings: list[dict[str, Any]] = []
+        missing_tables: set[str] = set()
+        missing_fields: set[str] = set()
+        unresolved_cases: list[dict[str, Any]] = []
+
+        for case in test_cases.get("cases", []):
+            if not isinstance(case, dict):
+                continue
+            table_names = self._expected_tables_for_case(case, mapping_by_case_id.get(str(case.get("test_case_id", "")), {}))
+            field_hints = self._expected_fields_for_case(case)
+            case_matches: list[dict[str, Any]] = []
+            case_missing_tables: list[str] = []
+            case_missing_fields: list[str] = []
+            for table_name in table_names:
+                table_info = table_catalog.get(table_name.lower())
+                if table_info is None:
+                    missing_tables.add(table_name)
+                    case_missing_tables.append(table_name)
+                    continue
+                matched_fields, missing_for_table = self._match_fields_on_table(table_info, field_hints)
+                case_missing_fields.extend(missing_for_table)
+                matched_tables[(table_info["db_name"], table_info["table_name"])] = table_info
+                case_matches.append(
+                    {
+                        "db_name": table_info["db_name"],
+                        "table_name": table_info["table_name"],
+                        "table_comment": table_info.get("table_comment", ""),
+                        "source_file": table_info["source_file"],
+                        "relationship": self._relationship_for_table(table_info["table_name"], case),
+                        "usage": self._usage_for_table(table_info["table_name"], case),
+                        "matched_columns": matched_fields,
+                        "missing_columns": missing_for_table,
+                    }
+                )
+            for field_name in case_missing_fields:
+                missing_fields.add(field_name)
+            case_mapping = {
+                "test_case_id": str(case.get("test_case_id", "")),
+                "title": str(case.get("title", "")),
+                "related_api_intent": str(case.get("related_api_intent", "")),
+                "interface_path": str(mapping_by_case_id.get(str(case.get("test_case_id", "")), {}).get("path", "")),
+                "interface_method": str(mapping_by_case_id.get(str(case.get("test_case_id", "")), {}).get("method", "")),
+                "matched_tables": case_matches,
+                "missing_tables": case_missing_tables,
+            }
+            database_mappings.append(case_mapping)
+            if not case_matches or case_missing_tables or case_missing_fields:
+                unresolved_cases.append(
+                    {
+                        "test_case_id": case_mapping["test_case_id"],
+                        "title": case_mapping["title"],
+                        "missing_tables": case_missing_tables,
+                        "missing_fields": sorted(set(case_missing_fields)),
+                    }
+                )
+
+        catalog_tables = [self._serialize_table_for_output(table) for table in matched_tables.values()]
+        catalog_tables.sort(key=lambda item: (str(item["db_name"]), str(item["table_name"])))
+        database_catalog = {
+            "knowledge_scope": database_scope,
+            "knowledge_root": str(self.knowledge_root),
+            "table_count": len(catalog_tables),
+            "tables": catalog_tables,
+        }
+        database_mapping = {
+            "requirement_id": test_cases.get("requirement_id", ""),
+            "knowledge_scope": database_scope,
+            "mappings": database_mappings,
+            "summary": {
+                "case_count": len(database_mappings),
+                "matched_table_count": len(catalog_tables),
+                "missing_tables": sorted(missing_tables),
+                "missing_fields": sorted(missing_fields),
+                "unresolved_case_count": len(unresolved_cases),
+            },
+            "unresolved_cases": unresolved_cases,
+        }
+        return {
+            "database_catalog": database_catalog,
+            "database_mapping": database_mapping,
+            "missing_database_report": self._render_missing_database_report(database_mapping),
+        }
+
+    def _load_database_table_catalog(self, database_scope: str) -> dict[str, dict[str, Any]]:
+        scope_dir = self.knowledge_root / database_scope / "database"
+        if not scope_dir.exists():
+            return {}
+
+        table_catalog: dict[str, dict[str, Any]] = {}
+        for db_file in sorted(scope_dir.glob("*.json")):
+            if db_file.name.lower() == "readme.json":
+                continue
+            try:
+                payload = json.loads(db_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            db_name = str(payload.get("db_name") or db_file.stem)
+            for table in payload.get("tables", []):
+                if not isinstance(table, dict):
+                    continue
+                table_name = str(table.get("table_name", "")).strip()
+                if not table_name:
+                    continue
+                columns = table.get("columns", [])
+                table_catalog[table_name.lower()] = {
+                    "system": database_scope,
+                    "db_name": db_name,
+                    "source_file": str(db_file),
+                    "table_name": table_name,
+                    "table_comment": str(table.get("table_comment", "")),
+                    "columns": columns if isinstance(columns, list) else [],
+                }
+        return table_catalog
+
+    def _expected_tables_for_case(self, case: dict[str, Any], mapping: dict[str, Any]) -> list[str]:
+        expected = []
+        intent = str(case.get("related_api_intent", ""))
+        expected.extend(INTENT_TABLE_MAP.get(intent, []))
+
+        mapping_path = str(mapping.get("path", ""))
+        for path_keyword, table_name in PATH_TABLE_HINTS:
+            if path_keyword in mapping_path and table_name not in expected:
+                expected.append(table_name)
+        return expected
+
+    def _expected_fields_for_case(self, case: dict[str, Any]) -> list[str]:
+        field_hints = []
+        intent = str(case.get("related_api_intent", ""))
+        field_hints.extend(INTENT_FIELD_HINTS.get(intent, []))
+        payload = case.get("payload", {})
+        if isinstance(payload, dict):
+            field_hints.extend(str(key) for key in payload)
+        return self._unique_preserve(field_hints)
+
+    def _match_fields_on_table(
+        self,
+        table_info: dict[str, Any],
+        field_hints: list[str],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        columns = table_info.get("columns", [])
+        normalized_columns = {
+            self._normalize_identifier(str(column.get("column_name", ""))): column
+            for column in columns
+            if isinstance(column, dict)
+        }
+        matched = []
+        missing = []
+        for field_name in field_hints:
+            normalized_field = self._normalize_identifier(field_name)
+            column = normalized_columns.get(normalized_field)
+            if column is None:
+                missing.append(field_name)
+                continue
+            matched.append(
+                {
+                    "column_name": str(column.get("column_name", "")),
+                    "column_type": str(column.get("column_type", "")),
+                    "column_comment": str(column.get("column_comment", "")),
+                }
+            )
+        return matched, self._unique_preserve(missing)
+
+    def _serialize_table_for_output(self, table_info: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "system": table_info["system"],
+            "db_name": table_info["db_name"],
+            "table_name": table_info["table_name"],
+            "table_comment": table_info.get("table_comment", ""),
+            "source_file": table_info["source_file"],
+            "columns": table_info.get("columns", []),
+        }
+
+    def _relationship_for_table(self, table_name: str, case: dict[str, Any]) -> str:
+        intent = str(case.get("related_api_intent", ""))
+        if intent in {"save_contact_way", "save_acquisition_link"}:
+            return "write_and_verify"
+        if intent in {"list_online_status", "change_online_status"}:
+            return "status_query_or_assert"
+        if intent == "sync_org":
+            return "scheduler_or_followup_assert"
+        return "candidate"
+
+    def _usage_for_table(self, table_name: str, case: dict[str, Any]) -> str:
+        intent = str(case.get("related_api_intent", ""))
+        if table_name.endswith("_log"):
+            return "verify_operation_log"
+        if "status" in table_name and intent in {"list_online_status", "change_online_status", "sync_org"}:
+            return "verify_current_online_state"
+        if "config" in table_name or "contact_way" in table_name or "link" in table_name:
+            return "verify_persisted_configuration"
+        return "candidate_context"
+
+    def _render_missing_database_report(self, database_mapping: dict[str, Any]) -> str:
+        summary = database_mapping.get("summary", {})
+        lines = [
+            "# Missing Database Report",
+            "",
+            f"- Knowledge Scope: `{database_mapping.get('knowledge_scope', '')}`",
+            f"- Case Count: `{summary.get('case_count', 0)}`",
+            f"- Matched Table Count: `{summary.get('matched_table_count', 0)}`",
+            "",
+            "## Missing Tables",
+            "",
+        ]
+        missing_tables = summary.get("missing_tables", [])
+        if isinstance(missing_tables, list) and missing_tables:
+            lines.extend(f"- `{item}`" for item in missing_tables)
+        else:
+            lines.append("- None")
+
+        lines.extend(["", "## Missing Fields", ""])
+        missing_fields = summary.get("missing_fields", [])
+        if isinstance(missing_fields, list) and missing_fields:
+            lines.extend(f"- `{item}`" for item in missing_fields)
+        else:
+            lines.append("- None")
+
+        lines.extend(["", "## Unresolved Cases", ""])
+        unresolved_cases = database_mapping.get("unresolved_cases", [])
+        if isinstance(unresolved_cases, list) and unresolved_cases:
+            for item in unresolved_cases:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(f"- `{item.get('test_case_id', '')}` {item.get('title', '')}")
+                missing_table_items = item.get("missing_tables", [])
+                if missing_table_items:
+                    lines.append(f"  - missing tables: {', '.join(str(value) for value in missing_table_items)}")
+                missing_field_items = item.get("missing_fields", [])
+                if missing_field_items:
+                    lines.append(f"  - missing fields: {', '.join(str(value) for value in missing_field_items)}")
+        else:
+            lines.append("- None")
+        return "\n".join(lines) + "\n"
 
     def _collect_operations(self, api_document: dict[str, Any]) -> list[dict[str, Any]]:
         paths = api_document.get("paths", {})
@@ -203,11 +539,16 @@ class ApiMapperAgent:
                 "path_params": [],
                 "request_body": {},
                 "response_body": {},
-                "auth_type": "待确认",
-                "detail_status": "待确认",
+                "auth_type": "pending_confirmation",
+                "detail_status": "pending_confirmation",
             }
 
         intent = str(case.get("related_api_intent", ""))
+        preferred_paths = INTENT_PREFERRED_PATHS.get(intent, [])
+        preferred_match = self._match_preferred_path(operations, preferred_paths)
+        if preferred_match:
+            return preferred_match
+
         case_text = " ".join(
             [
                 str(case.get("test_case_id", "")),
@@ -218,14 +559,19 @@ class ApiMapperAgent:
         rules = [
             (["checkout", "结算"], "POST", ["checkout", "结算"]),
             (["add_cart_item", "加入购物车"], "POST", ["cart/items", "加入购物车"]),
-            (["list_cart_items", "列表", "查询"], "GET", ["cart/items", "查询购物车列表"]),
+            (["list_cart_items", "购物车列表", "查询购物车"], "GET", ["cart/items", "查询购物车"]),
             (["update_cart_quantity", "数量"], "PUT", ["quantity", "修改购物车数量"]),
-            (["select_all", "全选"], "PUT", ["select-all", "全选"]),
+            (["select_all", "select_all_cart_items", "全选"], "PUT", ["select-all", "全选"]),
             (["select_cart_item", "勾选", "取消勾选"], "PUT", ["selected", "勾选"]),
-            (["clear_invalid", "失效"], "DELETE", ["invalid-items", "清空失效"]),
-            (["batch_delete", "批量删除"], "DELETE", ["cart/items", "批量删除"]),
+            (["clear_invalid", "clear_invalid_cart_items", "失效"], "DELETE", ["invalid-items", "清空失效"]),
+            (["batch_delete", "batch_delete_cart_items", "批量删除"], "DELETE", ["cart/items", "批量删除"]),
             (["delete_cart_item", "删除单个"], "DELETE", ["cart/items/{id}", "删除购物车商品"]),
             (["create_order", "新增", "创建"], "POST", ["orders", "create", "新增", "创建"]),
+            (["save_contact_way"], "POST", ["contact/way", "save"]),
+            (["save_acquisition_link"], "POST", ["acquisition/link", "save", "update"]),
+            (["list_online_status"], "GET", ["online/list"]),
+            (["change_online_status"], "POST", ["online/change"]),
+            (["sync_org"], "POST", ["sync", "org"]),
         ]
         for case_keywords, method, operation_keywords in rules:
             if any(keyword in case_text for keyword in case_keywords):
@@ -257,6 +603,19 @@ class ApiMapperAgent:
             )
             if any(keyword.lower() in operation_text.lower() for keyword in operation_keywords):
                 return operation
+        return None
+
+    def _match_preferred_path(
+        self,
+        operations: list[dict[str, Any]],
+        preferred_paths: list[str],
+    ) -> dict[str, Any] | None:
+        if not preferred_paths:
+            return None
+        for preferred_path in preferred_paths:
+            for operation in operations:
+                if operation.get("path") == preferred_path:
+                    return operation
         return None
 
     def _dedupe_operations(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -311,8 +670,35 @@ class ApiMapperAgent:
             "path_params": mapping.get("path_params", []),
             "request_body": mapping.get("request_body", {}),
             "response_body": mapping.get("response_body", {}),
-            "auth_type": mapping.get("auth_type", "待确认"),
-            "interface_detail_status": mapping.get("interface_detail_status", "待确认"),
+            "auth_type": mapping.get("auth_type", "pending_confirmation"),
+            "interface_detail_status": mapping.get("interface_detail_status", "pending_confirmation"),
+        }
+
+    def _build_request_schema_output(self, selected_interfaces: list[dict[str, Any]]) -> dict[str, Any]:
+        interfaces: list[dict[str, Any]] = []
+        for item in selected_interfaces:
+            schema_entry = dict(item)
+            schema_entry["body_type"] = self._body_type(schema_entry.get("request_body", {}))
+            schema_entry["required_fields"] = self._infer_required_fields(
+                {"request_body": schema_entry.get("request_body", {})}
+            )
+            interfaces.append(schema_entry)
+
+        if interfaces:
+            first_interface = interfaces[0]
+            return {
+                "path": first_interface.get("path", ""),
+                "method": first_interface.get("method", ""),
+                "body_type": first_interface.get("body_type", "application/json"),
+                "required_fields": first_interface.get("required_fields", []),
+                "interfaces": interfaces,
+            }
+        return {
+            "path": "",
+            "method": "",
+            "body_type": "application/json",
+            "required_fields": [],
+            "interfaces": [],
         }
 
     def _module_name(self, operation: dict[str, Any]) -> str:
@@ -345,6 +731,17 @@ class ApiMapperAgent:
             if isinstance(detail, dict) and "schema" in detail:
                 return detail.get("schema")
         return None
+
+    def _body_type(self, container: Any) -> str:
+        if not isinstance(container, dict):
+            return "application/json"
+        content = container.get("content")
+        if not isinstance(content, dict) or not content:
+            return "application/json"
+        if "application/json" in content:
+            return "application/json"
+        first_key = next(iter(content.keys()), None)
+        return str(first_key or "application/json")
 
     def _expand_schema(
         self,
@@ -434,9 +831,23 @@ class ApiMapperAgent:
             return "openapi_security"
         if self._params_by_location(parameters, "header"):
             return "header_context"
-        return "待确认"
+        return "pending_confirmation"
 
     def _detail_status(self, request_body: Any, response_body: Any, parameters: Any) -> str:
         if request_body or response_body or parameters:
             return "detail_fetched_from_apifox_openapi"
-        return "待确认"
+        return "pending_confirmation"
+
+    def _normalize_identifier(self, value: str) -> str:
+        return "".join(char.lower() for char in value if char.isalnum())
+
+    def _unique_preserve(self, items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result

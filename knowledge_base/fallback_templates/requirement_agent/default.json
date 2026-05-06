@@ -1,0 +1,32 @@
+{
+  "requirement_model": {
+    "requirement_id": "REQ-001",
+    "title": "用户注册",
+    "source_path": "{requirement_path}",
+    "scenarios": [
+      {
+        "scenario_id": "REQ-001-SC-01",
+        "name": "用户使用合法资料发起注册",
+        "expected_outcome": "系统创建账号成功"
+      },
+      {
+        "scenario_id": "REQ-001-SC-02",
+        "name": "用户使用重复邮箱发起注册",
+        "expected_outcome": "系统拒绝注册并返回重复提示"
+      }
+    ]
+  },
+  "acceptance_criteria": {
+    "requirement_id": "REQ-001",
+    "criteria": []
+  },
+  "business_flow": "# 用户注册业务流\n\n1. 用户填写用户名、邮箱、密码。\n2. 系统校验字段完整性与邮箱唯一性。\n3. 校验通过则创建账户，失败则返回错误。",
+  "risk_points": {
+    "requirement_id": "REQ-001",
+    "risks": [
+      "接口文档未明确重复邮箱的响应体结构。",
+      "密码强度规则未在需求中定义。",
+      "并发注册场景下邮箱唯一性校验可能存在竞态条件。"
+    ]
+  }
+}

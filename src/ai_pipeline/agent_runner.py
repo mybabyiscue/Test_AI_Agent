@@ -6,15 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from .agents import ApiMapperAgent, AutomationAgent, RequirementAgent, TestcaseAgent
+from .agents.requirement_agent import extract_pdf_text
 from .agents.role_profiles import render_role_profile_markdown
 from .api_mapper_markdown import (
     render_api_catalog_markdown,
     render_api_source_request_markdown,
+    render_database_catalog_markdown,
+    render_database_mapping_markdown,
     render_dependency_graph_markdown,
     render_endpoint_mapping_markdown,
     render_request_schema_markdown,
 )
 from .artifact_store import EventLog, StageWorkspace
+from .llm_backend import create_backend
 from .llm_runner import LocalPythonLLMRunner
 from .openapi_loader import load_api_document
 from .prompt_builder import build_stage_prompt
@@ -62,7 +66,8 @@ def _run_requirement_stage(stage: StageWorkspace, requirement_path: Path) -> dic
     agent = RequirementAgent()
     profile = agent.role_profile()
     _write_role_profile(stage, profile)
-    requirement_text = _read_stage_input_file(requirement_path)
+    pdf_snapshot = extract_pdf_text(requirement_path) if requirement_path.suffix.lower() == ".pdf" else None
+    requirement_text = pdf_snapshot["text"] if pdf_snapshot else _read_stage_input_file(requirement_path)
     outputs = _invoke_with_stage_prompt(
         stage=stage,
         profile=profile,
@@ -74,6 +79,16 @@ def _run_requirement_stage(stage: StageWorkspace, requirement_path: Path) -> dic
     stage.write_output_json("acceptance_criteria.json", outputs["acceptance_criteria"])
     stage.write_output_text("business_flow.md", str(outputs["business_flow"]))
     stage.write_output_json("risk_points.json", outputs["risk_points"])
+    if pdf_snapshot:
+        stage.write_output_text("pdf_extracted_text.md", str(pdf_snapshot["text"]))
+        stage.write_output_json(
+            "pdf_source_snapshot.json",
+            {
+                "source_pdf_path": str(requirement_path),
+                "text_snapshot_file": "requirement_agent/output/pdf_extracted_text.md",
+                "page_count": pdf_snapshot["page_count"],
+            },
+        )
     stage.write_log("stage.log", "Requirement analysis completed in worker process.\n")
     return outputs
 
@@ -96,6 +111,8 @@ def _run_testcase_stage(stage: StageWorkspace) -> dict[str, Any]:
         execute=lambda: agent.run(requirement_model, acceptance_criteria),
     )
     stage.write_output_json("test_cases.json", outputs["test_cases"])
+    if "test_points" in outputs:
+        stage.write_output_json("test_points.json", outputs["test_points"])
     stage.write_output_text("test_case_matrix.csv", str(outputs["test_case_matrix"]))
     stage.write_output_text("coverage_report.md", str(outputs["coverage_report"]))
     stage.write_log("stage.log", "Testcase design completed in worker process.\n")
@@ -131,14 +148,25 @@ def _run_api_mapper_stage(stage: StageWorkspace, api_doc_path: Path) -> dict[str
         profile=profile,
         stage_input=_serialize_items(input_snapshot),
         previous_output=_serialize_items({"test_cases.json": test_cases}),
-        execute=lambda: agent.run(test_cases, api_document),
+        execute=lambda: agent.run(
+            test_cases,
+            api_document,
+            database_scope=_resolve_database_scope(api_doc_path, source_request),
+        ),
     )
     stage.write_output_json("api_catalog.json", outputs["api_catalog"])
     stage.write_output_json("endpoint_mapping.json", outputs["endpoint_mapping"])
     stage.write_output_json("request_schema.json", outputs["request_schema"])
     stage.write_output_json("dependency_graph.json", outputs["dependency_graph"])
+    stage.write_output_json("database/database_catalog.json", outputs["database_catalog"])
+    stage.write_output_json("database_mapping.json", outputs["database_mapping"])
+    stage.write_output_json("mappings/database_mapping.json", outputs["database_mapping"])
+    stage.write_output_text("missing_database_report.md", str(outputs["missing_database_report"]))
+    stage.write_output_text("mappings/missing_database_report.md", str(outputs["missing_database_report"]))
     stage.write_output_text("apis/api_catalog.md", render_api_catalog_markdown(outputs["api_catalog"]))
     stage.write_output_text("apis/request_schema.md", render_request_schema_markdown(outputs["request_schema"]))
+    stage.write_output_text("database/database_catalog.md", render_database_catalog_markdown(outputs["database_catalog"]))
+    stage.write_output_text("mappings/database_mapping.md", render_database_mapping_markdown(outputs["database_mapping"]))
     stage.write_output_text("mappings/endpoint_mapping.md", render_endpoint_mapping_markdown(outputs["endpoint_mapping"]))
     stage.write_output_text("mappings/dependency_graph.md", render_dependency_graph_markdown(outputs["dependency_graph"]))
     stage.write_log("stage.log", "API mapping completed in worker process.\n")
@@ -197,17 +225,101 @@ def _invoke_with_stage_prompt(
         blocking_conditions=_serialize_list(profile["blocking_conditions"]),
         template_text=prompt_template,
     )
-    return LocalPythonLLMRunner().invoke(
+
+    llm_backend = create_backend()
+    llm_result = _try_llm_invoke(
+        llm_backend=llm_backend,
         stage=stage,
-        agent_name=stage.agent_name,
-        role_markdown_path=role_markdown_path,
-        prompt_template_path=prompt_template_path,
         prompt=prompt,
-        stage_input=stage_input,
-        previous_output=previous_output,
-        output_requirement=list(profile["output_contract"]),
-        blocking_conditions=list(profile["blocking_conditions"]),
-        execute=execute,
+        profile=profile,
+    )
+
+    if llm_result is not None:
+        stage.write_log("stage.log", f"LLM backend produced valid output for {stage.agent_name}.\n")
+        _log_llm_invocation(stage, role_markdown_path, prompt_template_path, prompt, stage_input, previous_output, profile, backend=llm_backend)
+        return llm_result
+
+    stage.write_log("stage.log", f"LLM unavailable or returned invalid output, falling back to hardcoded logic for {stage.agent_name}.\n")
+    _log_llm_invocation(stage, role_markdown_path, prompt_template_path, prompt, stage_input, previous_output, profile, backend=llm_backend)
+    return execute()
+
+
+def _try_llm_invoke(
+    *,
+    llm_backend: Any,
+    stage: StageWorkspace,
+    prompt: str,
+    profile: dict[str, Any],
+) -> dict[str, Any] | None:
+    from .llm_backend import FallbackBackend
+    if isinstance(llm_backend, FallbackBackend):
+        return None
+
+    result = llm_backend.invoke_json(prompt)
+    if result is None:
+        return None
+
+    if _validate_llm_output(stage.agent_name, result):
+        return result
+
+    # Partial merge: if LLM returned some valid fields, log and return what we have
+    required_keys = {
+        "requirement_agent": ["requirement_model", "acceptance_criteria"],
+        "testcase_agent": ["test_cases"],
+        "api_mapper_agent": ["endpoint_mapping", "api_catalog"],
+        "automation_agent": ["automation_plan", "execution_report"],
+    }
+    expected = required_keys.get(stage.agent_name, [])
+    present = [k for k in expected if k in result]
+    if present:
+        stage.write_log(
+            "stage.log",
+            f"LLM output partial for {stage.agent_name}: have {present}, missing {[k for k in expected if k not in result]}. Using available fields.\n",
+        )
+        return result
+
+    stage.write_log("stage.log", f"LLM output failed validation for {stage.agent_name}, ignoring.\n")
+    return None
+
+
+def _validate_llm_output(agent_name: str, result: dict[str, Any]) -> bool:
+    if not isinstance(result, dict):
+        return False
+    required_keys = {
+        "requirement_agent": ["requirement_model", "acceptance_criteria"],
+        "testcase_agent": ["test_cases"],
+        "api_mapper_agent": ["endpoint_mapping", "api_catalog"],
+        "automation_agent": ["automation_plan", "execution_report"],
+    }
+    keys = required_keys.get(agent_name, [])
+    return all(key in result for key in keys)
+
+
+def _log_llm_invocation(
+    stage: StageWorkspace,
+    role_markdown_path: Path,
+    prompt_template_path: Path,
+    prompt: str,
+    stage_input: str,
+    previous_output: str | None,
+    profile: dict[str, Any],
+    *,
+    backend: Any,
+) -> None:
+    backend_name = getattr(backend, "backend_name", backend.__class__.__name__)
+    stage.write_log("llm_prompt.md", prompt)
+    stage.write_log_json(
+        "llm_invocation.json",
+        {
+            "agent_name": stage.agent_name,
+            "backend": backend_name,
+            "role_markdown_path": str(role_markdown_path),
+            "prompt_template_path": str(prompt_template_path),
+            "stage_input": stage_input,
+            "previous_output": previous_output or "无",
+            "output_requirement": list(profile["output_contract"]),
+            "blocking_conditions": list(profile["blocking_conditions"]),
+        },
     )
 
 
@@ -231,6 +343,19 @@ def _read_stage_input_file(path: Path) -> str:
         return path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         return f"[binary input omitted] {path.name}"
+
+
+def _resolve_database_scope(api_doc_path: Path, source_request: dict[str, Any]) -> str:
+    joined = " ".join(
+        [
+            str(api_doc_path),
+            str(source_request.get("source_url", "")),
+            str(source_request.get("platform", "")),
+        ]
+    ).lower()
+    if "\\shark\\" in joined or "/shark/" in joined or " shark " in f" {joined} ":
+        return "shark"
+    return "saas"
 
 
 if __name__ == "__main__":

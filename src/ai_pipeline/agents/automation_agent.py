@@ -1,29 +1,42 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
 from ..artifact_store import StageWorkspace
+from ..config import project_root
 from ..test_environment import load_test_environment
-from .role_profiles import get_role_profile
+from .allure_helper import build_allure_viewing_guide, generate_allure_html_report, parse_pytest_summary
+from .base_agent import BaseAgent
+from .test_generator import (
+    build_generated_test_file,
+    deep_merge_payload,
+    derive_base_url,
+    extract_request_schema,
+    schema_blank_payload,
+)
 
 
-class AutomationAgent:
+class AutomationAgent(BaseAgent):
     agent_name = "automation_agent"
     stage_name = "automation_execution"
+    _CONTACT_WAY_DEFAULT_CATEGORY_ID = 16
+    _CONTACT_WAY_DEFAULT_USER_IDS = ("74698", "13951756117")
+    _CONTACT_WAY_DEFAULT_BACKUP_USER_ID = "13229"
 
     def __init__(self, test_environment_config_path: Path | None = None) -> None:
         self.test_environment_config_path = test_environment_config_path
-
-    def role_profile(self) -> dict[str, object]:
-        return get_role_profile(self.agent_name)
 
     def run(
         self,
@@ -32,16 +45,23 @@ class AutomationAgent:
         endpoint_mapping: dict[str, Any],
         stage_workspace: StageWorkspace,
     ) -> dict[str, object]:
-        generated_tests = endpoint_mapping["mappings"]
+        template_config = self._load_agent4_template_config()
+        generated_tests, data_resolution = self._prepare_generated_tests(
+            endpoint_mapping["mappings"],
+            run_id=run_id,
+            template_config=template_config,
+        )
         test_file = stage_workspace.write_output_text(
             "generated_tests/test_generated_api_cases.py",
-            self._build_generated_test_file(generated_tests),
+            build_generated_test_file(generated_tests),
         )
 
         automation_plan = {
             "run_id": run_id,
             "mode": "execute_with_skip_when_api_base_url_missing",
             "generated_tests": generated_tests,
+            "template_config_summary": self._redact_template_config(template_config),
+            "data_resolution": data_resolution,
         }
         stage_workspace.write_output_json("automation_plan.json", automation_plan)
 
@@ -58,13 +78,13 @@ class AutomationAgent:
             encoding="utf-8",
             errors="replace",
             check=False,
-            env=self._build_pytest_env(),
+            env=self._build_pytest_env(template_config=template_config),
         )
-        summary = self._parse_pytest_summary(completed.stdout + completed.stderr)
-        html_report = self._generate_allure_html_report(allure_results_dir, stage_workspace.output_dir / "allure-report")
+        summary = parse_pytest_summary(completed.stdout + completed.stderr)
+        html_report = generate_allure_html_report(allure_results_dir, stage_workspace.output_dir / "allure-report")
         viewing_guide_path = None
         if html_report.get("index_path"):
-            viewing_guide = self._build_allure_viewing_guide(
+            viewing_guide = build_allure_viewing_guide(
                 report_dir=Path(str(html_report["report_dir"])),
                 results_dir=allure_results_dir,
             )
@@ -116,412 +136,473 @@ class AutomationAgent:
             "generated_test_file": str(test_file),
         }
 
-    def _build_generated_test_file(self, generated_tests: list[dict[str, Any]]) -> str:
-        cases_json = json.dumps(generated_tests, ensure_ascii=False, indent=2)
-        return "\n".join(
-            [
-                "from __future__ import annotations",
-                "",
-                "import json",
-                "import os",
-                "import urllib.error",
-                "import urllib.request",
-                "",
-                "import pytest",
-                "",
-                "try:",
-                "    import allure",
-                "except ImportError:  # pragma: no cover - generated tests still need to be importable without Allure.",
-                "    class _NoopAttachmentType:",
-                "        JSON = 'application/json'",
-                "        TEXT = 'text/plain'",
-                "",
-                "    class _NoopDynamic:",
-                "        def epic(self, *_args, **_kwargs) -> None:",
-                "            return None",
-                "",
-                "        def feature(self, *_args, **_kwargs) -> None:",
-                "            return None",
-                "",
-                "        def story(self, *_args, **_kwargs) -> None:",
-                "            return None",
-                "",
-                "        def title(self, *_args, **_kwargs) -> None:",
-                "            return None",
-                "",
-                "    class _NoopStep:",
-                "        def __enter__(self):",
-                "            return self",
-                "",
-                "        def __exit__(self, *_args):",
-                "            return False",
-                "",
-                "    class _NoopAllure:",
-                "        attachment_type = _NoopAttachmentType()",
-                "        dynamic = _NoopDynamic()",
-                "",
-                "        def step(self, *_args, **_kwargs):",
-                "            return _NoopStep()",
-                "",
-                "        def attach(self, *_args, **_kwargs) -> None:",
-                "            return None",
-                "",
-                "    allure = _NoopAllure()",
-                "",
-                "BASE_URL = os.getenv('API_BASE_URL')",
-                "FRONT_USERNAME = os.getenv('FRONT_USERNAME')",
-                "FRONT_PASSWORD = os.getenv('FRONT_PASSWORD')",
-                "FRONT_LOGIN_PATH = os.getenv('FRONT_LOGIN_PATH', '/api/front/auth/login')",
-                "FRONT_TOKEN_JSON_PATH = os.getenv('FRONT_TOKEN_JSON_PATH', 'data.token')",
-                "AUTH_HEADER_NAME = os.getenv('AUTH_HEADER_NAME', 'Authorization')",
-                "AUTH_SCHEME = os.getenv('AUTH_SCHEME', 'Bearer')",
-                "CONTEXT: dict[str, object] = {}",
-                "pytestmark = pytest.mark.skipif(",
-                "    not BASE_URL,",
-                "    reason='Set API_BASE_URL to execute generated API tests.',",
-                ")",
-                "",
-                f"CASES = json.loads({cases_json!r})",
-                "",
-                "def _json_attachment(name: str, value: object) -> None:",
-                "    allure.attach(",
-                "        json.dumps(value, ensure_ascii=False, indent=2),",
-                "        name=name,",
-                "        attachment_type=allure.attachment_type.JSON,",
-                "    )",
-                "",
-                "def _extract_json_path(payload: dict[str, object], path: str) -> object:",
-                "    current: object = payload",
-                "    for part in path.split('.'):",
-                "        if not isinstance(current, dict) or part not in current:",
-                "            raise AssertionError(f'Missing token field: {path}')",
-                "        current = current[part]",
-                "    return current",
-                "",
-                "def _send_json(",
-                "    method: str,",
-                "    path: str,",
-                "    payload_obj: object | None = None,",
-                "    headers: dict[str, str] | None = None,",
-                ") -> tuple[int, str]:",
-                "    body = None if method == 'GET' else json.dumps(payload_obj or {}).encode('utf-8')",
-                "    request = urllib.request.Request(",
-                "        url=f'{BASE_URL}{path}',",
-                "        data=body,",
-                "        headers={'Content-Type': 'application/json', **(headers or {})},",
-                "        method=method,",
-                "    )",
-                "    try:",
-                "        with urllib.request.urlopen(request, timeout=10) as response:",
-                "            return response.getcode(), response.read().decode('utf-8')",
-                "    except urllib.error.HTTPError as exc:",
-                "        return exc.code, exc.read().decode('utf-8')",
-                "",
-                "def _login_front_user() -> dict[str, str]:",
-                "    if 'front_auth_headers' in CONTEXT:",
-                "        return CONTEXT['front_auth_headers']  # type: ignore[return-value]",
-                "    if not FRONT_USERNAME or not FRONT_PASSWORD:",
-                "        pytest.skip('缺少 FRONT_USERNAME 或 FRONT_PASSWORD，无法执行需要登录态的接口用例。')",
-                "    status_code, response_text = _send_json(",
-                "        'POST',",
-                "        FRONT_LOGIN_PATH,",
-                "        {'username': FRONT_USERNAME, 'password': FRONT_PASSWORD},",
-                "    )",
-                "    allure.attach(",
-                "        response_text,",
-                "        name='前台登录响应',",
-                "        attachment_type=allure.attachment_type.JSON,",
-                "    )",
-                "    assert status_code == 200",
-                "    token = str(_extract_json_path(json.loads(response_text), FRONT_TOKEN_JSON_PATH))",
-                "    CONTEXT['front_auth_headers'] = {AUTH_HEADER_NAME: f'{AUTH_SCHEME} {token}'}",
-                "    _reset_cart_once(CONTEXT['front_auth_headers'])  # type: ignore[arg-type]",
-                "    return CONTEXT['front_auth_headers']  # type: ignore[return-value]",
-                "",
-                "def _reset_cart_once(headers: dict[str, str]) -> None:",
-                "    if CONTEXT.get('cart_reset_done'):",
-                "        return",
-                "    CONTEXT['cart_reset_done'] = True",
-                "    status_code, response_text = _send_json('GET', '/api/front/cart/items', headers=headers)",
-                "    if status_code != 200:",
-                "        return",
-                "    body = _json_body(response_text)",
-                "    data = body.get('data', {})",
-                "    items = data.get('items', []) if isinstance(data, dict) else []",
-                "    ids = [int(item['id']) for item in items if isinstance(item, dict) and item.get('id') is not None]",
-                "    if ids:",
-                "        _send_json('DELETE', '/api/front/cart/items', {'ids': ids}, headers=headers)",
-                "",
-                "def _auth_headers(case: dict[str, object]) -> dict[str, str]:",
-                "    if 401 in case.get('expected_status_codes', []):",
-                "        return {}",
-                "    return _login_front_user()",
-                "",
-                "def _json_body(response_text: str) -> dict[str, object]:",
-                "    try:",
-                "        body = json.loads(response_text)",
-                "    except json.JSONDecodeError:",
-                "        return {}",
-                "    return body if isinstance(body, dict) else {}",
-                "",
-                "def _effective_status_code(http_status_code: int, response_text: str) -> int:",
-                "    body = _json_body(response_text)",
-                "    code = body.get('code')",
-                "    return int(code) if isinstance(code, int) else http_status_code",
-                "",
-                "def _front_get(path: str) -> dict[str, object]:",
-                "    status_code, response_text = _send_json('GET', path, headers=_login_front_user())",
-                "    assert status_code == 200",
-                "    return _json_body(response_text)",
-                "",
-                "def _valid_pet_ids() -> list[int]:",
-                "    if 'valid_pet_ids' in CONTEXT:",
-                "        return CONTEXT['valid_pet_ids']  # type: ignore[return-value]",
-                "    body = _front_get('/api/front/pets')",
-                "    records = body.get('data', {}).get('records', []) if isinstance(body.get('data'), dict) else []",
-                "    ids = [",
-                "        int(item['id'])",
-                "        for item in records",
-                "        if isinstance(item, dict)",
-                "        and item.get('id') is not None",
-                "        and item.get('pet_status') == 1",
-                "        and int(item.get('stock_quantity') or 0) > 0",
-                "    ]",
-                "    if not ids:",
-                "        pytest.skip('缺少上架且库存大于 0 的宠物测试数据。')",
-                "    CONTEXT['valid_pet_ids'] = ids",
-                "    return ids",
-                "",
-                "def _ensure_cart_items(count: int = 1) -> list[int]:",
-                "    for pet_id in _valid_pet_ids()[:count]:",
-                "        _send_json(",
-                "            'POST',",
-                "            '/api/front/cart/items',",
-                "            {'pet_id': pet_id, 'quantity': 1},",
-                "            headers=_login_front_user(),",
-                "        )",
-                "    body = _front_get('/api/front/cart/items')",
-                "    data = body.get('data', {})",
-                "    items = data.get('items', []) if isinstance(data, dict) else []",
-                "    ids = [int(item['id']) for item in items if isinstance(item, dict) and item.get('id') is not None]",
-                "    if len(ids) < count:",
-                "        pytest.skip(f'购物车测试数据不足，需要 {count} 条，当前 {len(ids)} 条。')",
-                "    return ids[:count]",
-                "",
-                "def _resolve_placeholder(value: str) -> object:",
-                "    if value == '${valid_pet_id}':",
-                "        return _valid_pet_ids()[0]",
-                "    if value == '${cart_item_id}' or value == '${cart_item_id_1}':",
-                "        return _ensure_cart_items(1)[0]",
-                "    if value == '${cart_item_id_2}':",
-                "        return _ensure_cart_items(2)[1]",
-                "    return value",
-                "",
-                "def _resolve_value(value: object) -> object:",
-                "    if isinstance(value, str):",
-                "        return _resolve_placeholder(value)",
-                "    if isinstance(value, list):",
-                "        return [_resolve_value(item) for item in value]",
-                "    if isinstance(value, dict):",
-                "        return {key: _resolve_value(item) for key, item in value.items()}",
-                "    return value",
-                "",
-                "def _resolve_path(path: str) -> str:",
-                "    if '{id}' in path:",
-                "        path = path.replace('{id}', str(_ensure_cart_items(1)[0]))",
-                "    return path",
-                "",
-                "def _request(case: dict[str, object]) -> tuple[int, str]:",
-                "    method = str(case['method']).upper()",
-                "    payload_obj = _resolve_value(case.get('payload', {}))",
-                "    payload = json.dumps(payload_obj).encode('utf-8')",
-                "    resolved_path = _resolve_path(str(case['path']))",
-                "    url = f\"{BASE_URL}{resolved_path}\"",
-                "    headers = {'Content-Type': 'application/json', **_auth_headers(case)}",
-                "    _json_attachment(",
-                "        '请求信息',",
-                "        {'method': method, 'url': url, 'headers': headers, 'body': payload_obj},",
-                "    )",
-                "    request = urllib.request.Request(",
-                "        url=url,",
-                "        data=None if method == 'GET' else payload,",
-                "        headers=headers,",
-                "        method=method,",
-                "    )",
-                "    try:",
-                "        with urllib.request.urlopen(request, timeout=10) as response:",
-                "            status_code = response.getcode()",
-                "            response_text = response.read().decode('utf-8')",
-                "    except urllib.error.HTTPError as exc:",
-                "        status_code = exc.code",
-                "        response_text = exc.read().decode('utf-8')",
-                "    _json_attachment('响应信息', {'status_code': status_code, 'body': response_text})",
-                "    return status_code, response_text",
-                "",
-                "@pytest.mark.parametrize(",
-                "    'case',",
-                "    CASES,",
-                "    ids=[str(case['automation_id']) for case in CASES],",
-                ")",
-                "def test_generated_api_case(case: dict[str, object]) -> None:",
-                "    allure.dynamic.epic(str(case.get('epic', '宠物商店系统')))",
-                "    allure.dynamic.feature(str(case.get('feature', '接口自动化')))",
-                "    allure.dynamic.story(str(case.get('story', case.get('test_case_id', '自动化用例'))))",
-                "    allure.dynamic.title(str(case.get('title', case.get('automation_id', '接口自动化用例'))))",
-                "",
-                "    with allure.step('前置条件：读取环境变量与测试用例数据'):",
-                "        assert BASE_URL, '缺少 API_BASE_URL，无法执行接口自动化用例'",
-                "        _json_attachment('测试用例元数据', case)",
-                "",
-                "    with allure.step('执行步骤：发送接口请求并采集响应'):",
-                "        if case.get('test_case_id') == 'TC-CART-CHECKOUT-002':",
-                "            pytest.skip('该用例需要稳定失效商品 fixture，当前先保留 Allure 设计和接口映射。')",
-                "        if case.get('test_case_id') == 'TC-CART-CHECKOUT-001':",
-                "            _ensure_cart_items(1)",
-                "        status_code, response_text = _request(case)",
-                "",
-                "    with allure.step('断言结果：校验响应状态码符合预期'):",
-                "        expected_status_codes = case['expected_status_codes']",
-                "        effective_status_code = _effective_status_code(status_code, response_text)",
-                "        _json_attachment(",
-                "            '断言结果',",
-                "            {",
-                "                'actual_http_status_code': status_code,",
-                "                'actual_effective_status_code': effective_status_code,",
-                "                'expected_status_codes': expected_status_codes,",
-                "                'response_preview': response_text[:1000],",
-                "            },",
-                "        )",
-                "        assert effective_status_code in expected_status_codes",
-            ]
+    def _default_agent4_template_path(self) -> Path:
+        return project_root() / "workspace" / "templates" / "Agent4自动化执行输入模板_鉴权约束修正版.xlsx"
+
+    def _load_agent4_template_config(self) -> dict[str, str]:
+        template_path = self._default_agent4_template_path()
+        if not template_path.exists():
+            return {}
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return {}
+
+        workbook = load_workbook(template_path, data_only=True)
+        field_map: dict[str, str] = {}
+        for sheet_name in ["最小输入", "登录鉴权配置", "可选接口补充"]:
+            if sheet_name not in workbook.sheetnames:
+                continue
+            sheet = workbook[sheet_name]
+            for row in range(5, sheet.max_row + 1):
+                field_name = sheet.cell(row, 2).value
+                field_value = sheet.cell(row, 4).value
+                if field_name in {None, ""}:
+                    continue
+                normalized_name = str(field_name).strip()
+                normalized_value = "" if field_value is None else str(field_value).strip()
+                field_map[normalized_name] = normalized_value
+
+        config: dict[str, str] = {}
+        mappings = {
+            "测试环境地址": "API_BASE_URL",
+            "登录账号": "FRONT_USERNAME",
+            "登录密码": "FRONT_PASSWORD",
+            "系统类型 sysType": "FRONT_SYS_TYPE",
+            "登录接口地址": "FRONT_LOGIN_PATH",
+            "登录接口请求方式": "FRONT_LOGIN_METHOD",
+            "登录接口请求头": "FRONT_LOGIN_HEADERS_JSON",
+            "登录接口请求体": "FRONT_LOGIN_BODY_TEMPLATE",
+            "登录成功标识": "LOGIN_SUCCESS_MARKER",
+            "鉴权值提取字段路径": "FRONT_TOKEN_JSON_PATH",
+            "鉴权 Header 名称": "AUTH_HEADER_NAME",
+            "鉴权 Header 前缀": "AUTH_SCHEME",
+        }
+        for field_name, env_name in mappings.items():
+            value = field_map.get(field_name, "")
+            if value:
+                config[env_name] = value
+
+        success_marker = config.get("LOGIN_SUCCESS_MARKER", "")
+        if success_marker.startswith("code="):
+            config["SUCCESS_RESPONSE_CODE"] = success_marker.split("=", 1)[1].strip()
+        elif success_marker:
+            config["SUCCESS_RESPONSE_CODE"] = success_marker
+        return config
+
+    def _redact_template_config(self, template_config: dict[str, str]) -> dict[str, str]:
+        redacted: dict[str, str] = {}
+        for key, value in template_config.items():
+            if key in {"FRONT_PASSWORD"}:
+                redacted[key] = "***"
+            else:
+                redacted[key] = value
+        return redacted
+
+    def _prepare_generated_tests(
+        self,
+        mappings: list[dict[str, Any]],
+        *,
+        run_id: str,
+        template_config: dict[str, str],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        prepared_cases = copy.deepcopy(mappings)
+        report: dict[str, Any] = {"warnings": [], "case_overrides": []}
+        if not any(str(case.get("test_case_id", "")).startswith("TC-LIVECODE-") for case in prepared_cases):
+            return prepared_cases, report
+
+        try:
+            context = self._discover_livecode_context(template_config)
+        except Exception as exc:  # pragma: no cover - network/runtime dependent
+            report["warnings"].append(f"livecode_context_unavailable: {exc}")
+            return prepared_cases, report
+
+        sequence = 0
+        for case in prepared_cases:
+            test_case_id = str(case.get("test_case_id", ""))
+            path = str(case.get("path", ""))
+            if str(case.get("module", "")).startswith("微信服务（/wx/mp/）"):
+                case["base_url"] = context["wx_base_url"]
+
+            if path == "/contact/way/save":
+                sequence += 1
+                payload = self._build_contact_way_payload(
+                    run_id=run_id,
+                    sequence=sequence,
+                    original_payload=case.get("payload", {}),
+                    request_schema=extract_request_schema(case.get("request_body", {})),
+                    context=context,
+                )
+                if test_case_id == "TC-LIVECODE-002":
+                    fixture_id = self._create_contact_way_fixture(payload, context)
+                    if fixture_id is not None:
+                        payload["id"] = fixture_id
+                case["payload"] = payload
+                case["payload_strategy"] = "raw_payload"
+                report["case_overrides"].append({"test_case_id": test_case_id, "strategy": "contact_way_live_payload"})
+                continue
+
+            if path == "/acquisition/link/saveOrUpdate":
+                sequence += 1
+                case["payload"] = self._build_acquisition_link_payload(
+                    run_id=run_id,
+                    sequence=sequence,
+                    original_payload=case.get("payload", {}),
+                    request_schema=extract_request_schema(case.get("request_body", {})),
+                    context=context,
+                )
+                report["case_overrides"].append(
+                    {"test_case_id": test_case_id, "strategy": "acquisition_link_live_payload"}
+                )
+                continue
+
+            if path == "/acquisition/user/online/change":
+                online_candidates = context.get("online_candidates", [])
+                if not online_candidates:
+                    case["skip_reason"] = "未查询到可操作的企微员工，跳过上下线接口自动化。"
+                    report["case_overrides"].append(
+                        {"test_case_id": test_case_id, "strategy": "skip_no_online_candidates"}
+                    )
+                    continue
+                selected = online_candidates[0]
+                payload = dict(case.get("payload", {})) if isinstance(case.get("payload", {}), dict) else {}
+                payload["corpId"] = selected["corpId"]
+                payload["userId"] = selected["userId"]
+                case["payload"] = payload
+                report["case_overrides"].append({"test_case_id": test_case_id, "strategy": "online_change_payload"})
+
+        return prepared_cases, report
+
+    def _discover_livecode_context(self, template_config: dict[str, str]) -> dict[str, Any]:
+        env = self._build_pytest_env(template_config=template_config)
+        operation_base_url = str(env.get("API_BASE_URL", "")).strip()
+        if not operation_base_url:
+            raise RuntimeError("missing API_BASE_URL")
+        wx_base_url = derive_base_url(operation_base_url, "/wx/mp/")
+        auth_headers = self._runtime_login_headers(env)
+        corp_list = self._request_json("GET", f"{wx_base_url}wechatinfo/corp", headers=auth_headers)
+        corp_data = corp_list.get("data", []) if isinstance(corp_list.get("data"), list) else []
+        if not corp_data:
+            raise RuntimeError("no_available_corps")
+        corp = corp_data[0]
+        corp_id = str(corp.get("appId") or "")
+        if not corp_id:
+            raise RuntimeError("corp_id_missing")
+
+        user_list_payload = {"corpId": corp_id, "pageNum": 1, "pageSize": 200}
+        user_list = self._request_json("POST", f"{wx_base_url}cp/user/list", payload=user_list_payload, headers=auth_headers)
+        users = user_list.get("data", {}).get("list", []) if isinstance(user_list.get("data"), dict) else []
+        if not users:
+            raise RuntimeError("no_available_cp_users")
+        selected_user = self._select_preferred_user(users)
+
+        contact_category_response = self._request_json(
+            "GET",
+            f"{operation_base_url.rstrip('/')}/contact/category/queryCategoryList?{urllib.parse.urlencode({'corpId': corp_id})}",
+            headers=auth_headers,
         )
+        contact_categories = self._flatten_tree_nodes(contact_category_response.get("data", []))
+        if not contact_categories:
+            raise RuntimeError("no_contact_categories")
 
-    def _parse_pytest_summary(self, output: str) -> dict[str, int]:
-        summary = {"passed": 0, "failed": 0, "skipped": 0}
-        for key in summary:
-            match = re.search(rf"(\d+) {key}", output)
-            if match:
-                summary[key] = int(match.group(1))
-        return summary
-
-    def _generate_allure_html_report(self, results_dir: Path, report_dir: Path) -> dict[str, object]:
-        if not results_dir.exists() or not any(results_dir.iterdir()):
-            return {
-                "generated": False,
-                "reason": "allure_results_missing",
-                "results_dir": str(results_dir),
-                "report_dir": str(report_dir),
-                "index_path": None,
-            }
-
-        allure_command = shutil.which("allure")
-        if not allure_command:
-            return {
-                "generated": False,
-                "reason": "allure_cli_missing",
-                "results_dir": str(results_dir),
-                "report_dir": str(report_dir),
-                "index_path": None,
-            }
-
-        completed = subprocess.run(
-            [allure_command, "generate", str(results_dir), "-o", str(report_dir), "--clean"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
+        link_category_response = self._request_json(
+            "GET",
+            f"{operation_base_url.rstrip('/')}/acquisition/link/category/selectList?{urllib.parse.urlencode({'corpId': corp_id})}",
+            headers=auth_headers,
         )
-        index_path = report_dir / "index.html"
+        link_categories = self._flatten_tree_nodes(link_category_response.get("data", []))
+        online_response = self._request_json(
+            "GET",
+            f"{operation_base_url.rstrip('/')}/acquisition/user/online/list",
+            headers=auth_headers,
+        )
+        online_candidates = online_response.get("data", []) if isinstance(online_response.get("data"), list) else []
+
         return {
-            "generated": completed.returncode == 0 and index_path.exists(),
-            "reason": None if completed.returncode == 0 and index_path.exists() else "allure_generate_failed",
-            "results_dir": str(results_dir),
-            "report_dir": str(report_dir),
-            "index_path": str(index_path) if index_path.exists() else None,
-            "command": [allure_command, "generate", str(results_dir), "-o", str(report_dir), "--clean"],
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
+            "operation_base_url": operation_base_url if operation_base_url.endswith("/") else f"{operation_base_url}/",
+            "wx_base_url": wx_base_url,
+            "auth_headers": auth_headers,
+            "corp": corp,
+            "corp_id": corp_id,
+            "users": users,
+            "selected_user": selected_user,
+            "contact_categories": contact_categories,
+            "link_categories": link_categories,
+            "online_candidates": online_candidates,
         }
 
-    def _build_allure_viewing_guide(
+    def _build_contact_way_payload(
         self,
         *,
-        report_dir: Path,
-        results_dir: Path,
-        port: int = 18088,
-    ) -> str:
-        resolved_report_dir = report_dir.resolve()
-        resolved_results_dir = results_dir.resolve()
-        index_path = (resolved_report_dir / "index.html").resolve()
-        return "\n".join(
-            [
-                "# Allure 报告查看方式说明",
-                "",
-                "## index.html 的用途",
-                "`index.html` 是 Allure HTML 报告的前端入口文件，它会读取同目录下的 `widgets/`、`data/`、`history/` 等 JSON 数据来展示测试结果。",
-                "",
-                "## 报告文件所在目录",
-                f"- 报告目录：`{resolved_report_dir}`",
-                f"- 入口文件：`{index_path}`",
-                f"- Allure 原始结果目录：`{resolved_results_dir}`",
-                "",
-                "## 查看方式 1：使用 Python 启动本地静态服务（推荐）",
-                "直接用 `file://` 打开时，部分浏览器会因为本地文件安全策略导致页面一直 loading。推荐使用本地 HTTP 服务查看。",
-                "",
-                "```powershell",
-                f"Set-Location -LiteralPath \"{resolved_report_dir}\"",
-                f"python -m http.server {port} --bind 127.0.0.1",
-                "```",
-                "",
-                "然后在浏览器访问：",
-                "",
-                f"`http://127.0.0.1:{port}/index.html`",
-                "",
-                "查看完成后，在启动服务的终端按 `Ctrl+C` 关闭。",
-                "",
-                "## 查看方式 2：使用 Allure CLI 直接打开原始结果",
-                "如果本机已安装 Allure CLI，可以直接执行：",
-                "",
-                "```powershell",
-                f"allure open \"{resolved_results_dir}\"",
-                "```",
-                "",
-                "该命令会自动启动一个本地 Web 服务并打开浏览器。",
-                "",
-                "## 查看方式 3：直接打开 index.html（不推荐作为唯一方式）",
-                "如果浏览器允许本地文件读取，可以执行：",
-                "",
-                "```powershell",
-                f"Start-Process -FilePath \"{index_path}\"",
-                "```",
-                "",
-                "如果页面一直停留在 loading，请改用“查看方式 1”。",
-            ]
-        )
+        run_id: str,
+        sequence: int,
+        original_payload: object,
+        request_schema: dict[str, Any] | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(original_payload) if isinstance(original_payload, dict) else {}
+        unique_name = f"auto_{run_id}_{sequence}_{int(time.time())}"[-30:]
+        primary_users = self._select_contact_way_primary_users(context["users"])
+        backup_user = self._select_contact_way_backup_user(context["users"], primary_users)
+        base_payload = {
+            "id": payload.get("id"),
+            "name": payload.get("name") or unique_name,
+            "categoryId": payload.get("categoryId", self._CONTACT_WAY_DEFAULT_CATEGORY_ID),
+            "corpId": payload.get("corpId") or context["corp_id"],
+            "welcomeConfigVO": payload.get("welcomeConfigVO")
+            or {
+                "id": None,
+                "configType": 3,
+            },
+            "markTagIdList": payload.get("markTagIdList", []),
+            "effectiveType": payload.get("effectiveType", 0),
+            "shuntType": payload.get("shuntType", 2),
+            "skipVerify": payload.get("skipVerify", 0),
+            "nextAutoEnableTime": payload.get("nextAutoEnableTime"),
+            "allTimeUsers": payload.get("allTimeUsers")
+            or [
+                {
+                    "userId": user["userId"],
+                    "enable": 1,
+                    "addNumber": -1,
+                    "sort": index,
+                }
+                for index, user in enumerate(primary_users)
+            ],
+            "splitTimeUsers": payload.get("splitTimeUsers")
+            or [
+                {
+                    "id": None,
+                    "contants": [],
+                    "CCCC": [],
+                    "DDDD": [],
+                }
+            ],
+            "backupUserId": payload.get("backupUserId") or backup_user["userId"],
+        }
+        return deep_merge_payload(base_payload, payload)
 
-    def _build_pytest_env(self) -> dict[str, str]:
+    def _build_acquisition_link_payload(
+        self,
+        *,
+        run_id: str,
+        sequence: int,
+        original_payload: object,
+        request_schema: dict[str, Any] | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(original_payload) if isinstance(original_payload, dict) else {}
+        schema_payload = schema_blank_payload(request_schema or {})
+        unique_name = f"auto_link_{run_id}_{sequence}_{int(time.time())}"[-30:]
+        selected_user = context["selected_user"]
+        selected_category = context["link_categories"][0]
+        schema_payload.update(
+            {
+                "createTime": None,
+                "updateTime": None,
+                "id": None,
+                "name": payload.get("name") or unique_name,
+                "corpId": payload.get("corpId") or context["corp_id"],
+                "categoryId": payload.get("categoryId") or selected_category["value"],
+                "markTagIdList": [],
+                "skipVerify": payload.get("skipVerify", 1),
+                "effectiveType": payload.get("effectiveType", 0),
+                "shuntType": payload.get("shuntType", 0),
+                "allTimeUsers": payload.get("allTimeUsers")
+                or [
+                    {
+                        "id": None,
+                        "userId": selected_user["userId"],
+                        "addNumber": -1,
+                        "enable": 1,
+                        "sort": None,
+                        "pointer": None,
+                    }
+                ],
+                "splitTimeUsers": [],
+                "backupUserId": None,
+                "welcomeConfigVO": None,
+                "nextAutoEnableTime": payload.get("nextAutoEnableTime"),
+                "isShowOnPage": payload.get("isShowOnPage", 0),
+            }
+        )
+        return deep_merge_payload(schema_payload, payload)
+
+    def _create_contact_way_fixture(self, payload: dict[str, Any], context: dict[str, Any]) -> int | None:
+        response = self._request_json(
+            "POST",
+            f"{context['operation_base_url']}contact/way/save",
+            payload=payload,
+            headers=context["auth_headers"],
+        )
+        data = response.get("data")
+        return int(data) if isinstance(data, int) else None
+
+    def _flatten_tree_nodes(self, nodes: object) -> list[dict[str, Any]]:
+        flattened: list[dict[str, Any]] = []
+        if not isinstance(nodes, list):
+            return flattened
+        stack = [item for item in nodes if isinstance(item, dict)]
+        while stack:
+            node = stack.pop(0)
+            flattened.append(node)
+            children = node.get("children", [])
+            if isinstance(children, list):
+                stack.extend(child for child in children if isinstance(child, dict))
+        return flattened
+
+    def _select_preferred_user(self, users: list[dict[str, Any]]) -> dict[str, Any]:
+        for user in users:
+            if user.get("sysUserId") is not None:
+                return user
+        return users[0]
+
+    def _select_contact_way_primary_users(self, users: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        for expected_user_id in self._CONTACT_WAY_DEFAULT_USER_IDS:
+            user = self._find_user_by_user_id(users, expected_user_id)
+            if user is not None:
+                selected.append(user)
+        if selected:
+            return selected
+        if len(users) >= 2:
+            return users[:2]
+        if users:
+            return [users[0]]
+        raise RuntimeError("no_available_cp_users")
+
+    def _select_contact_way_backup_user(
+        self,
+        users: list[dict[str, Any]],
+        primary_users: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        preferred = self._find_user_by_user_id(users, self._CONTACT_WAY_DEFAULT_BACKUP_USER_ID)
+        if preferred is not None:
+            return preferred
+        primary_ids = {str(user.get("userId")) for user in primary_users}
+        for user in users:
+            if str(user.get("userId")) not in primary_ids:
+                return user
+        if primary_users:
+            return primary_users[0]
+        raise RuntimeError("no_available_backup_user")
+
+    def _find_user_by_user_id(self, users: list[dict[str, Any]], expected_user_id: str) -> dict[str, Any] | None:
+        for user in users:
+            if str(user.get("userId")) == expected_user_id:
+                return user
+        return None
+
+    def _extract_department_id(self, user: dict[str, Any]) -> int | None:
+        raw = user.get("departmentId")
+        if isinstance(raw, int):
+            return raw
+        if not isinstance(raw, str):
+            return None
+        match = re.search(r"\d+", raw)
+        return int(match.group(0)) if match else None
+
+    def _normalize_int(self, value: object) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text == "不知道":
+            return None
+        if text.isdigit():
+            return int(text)
+        return None
+
+
+    def _runtime_login_headers(self, env: dict[str, str]) -> dict[str, str]:
+        login_url = env.get("FRONT_LOGIN_PATH", "")
+        if not login_url:
+            raise RuntimeError("missing FRONT_LOGIN_PATH")
+        login_body = env.get("FRONT_LOGIN_BODY_TEMPLATE", "")
+        if not login_body:
+            raise RuntimeError("missing FRONT_LOGIN_BODY_TEMPLATE")
+        rendered_body = (
+            login_body.replace("${username}", env.get("FRONT_USERNAME", ""))
+            .replace("${password}", env.get("FRONT_PASSWORD", ""))
+            .replace("${sysType}", env.get("FRONT_SYS_TYPE", ""))
+        )
+        payload = json.loads(rendered_body)
+        headers = {"Content-Type": "application/json"}
+        raw_headers = env.get("FRONT_LOGIN_HEADERS_JSON", "")
+        if raw_headers and raw_headers not in {"4", "null", "None"}:
+            headers.update({str(k): str(v) for k, v in json.loads(raw_headers).items()})
+        response = self._request_json(
+            env.get("FRONT_LOGIN_METHOD", "POST").upper(),
+            login_url,
+            payload=payload,
+            headers=headers,
+        )
+        token_path = env.get("FRONT_TOKEN_JSON_PATH", "data.accessToken")
+        token = self._extract_runtime_json_path(response, token_path)
+        header_name = env.get("AUTH_HEADER_NAME", "Authorization")
+        scheme = env.get("AUTH_SCHEME", "Bearer")
+        if not scheme or scheme in {"无前缀", "NONE", "none"}:
+            auth_value = str(token)
+        else:
+            auth_value = f"{scheme} {token}".strip()
+        return {header_name: auth_value}
+
+    def _extract_runtime_json_path(self, payload: dict[str, Any], path: str) -> object:
+        current: object = payload
+        for part in path.split("."):
+            if not isinstance(current, dict) or part not in current:
+                raise RuntimeError(f"missing json path: {path}")
+            current = current[part]
+        return current
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        body = None if method.upper() == "GET" else json.dumps(payload or {}).encode("utf-8")
+        request = urllib.request.Request(
+            url=url,
+            data=body,
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method=method.upper(),
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:  # pragma: no cover - runtime dependent
+            raw = exc.read().decode("utf-8")
+            raise RuntimeError(f"http_error:{exc.code}:{raw}") from exc
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise RuntimeError(f"invalid_json_response:{url}")
+        if str(data.get("code")) not in {"00000", ""} and data.get("code") is not None:
+            raise RuntimeError(f"business_error:{url}:{data.get('msg')}")
+        return data
+
+    def _build_pytest_env(self, template_config: dict[str, str] | None = None) -> dict[str, str]:
         env = {"PYTHONDONTWRITEBYTECODE": "1", **os.environ}
         profile = env.get("AI_PIPELINE_TEST_ENV_PROFILE")
-        if not profile:
-            return env
+        if profile:
+            runtime = load_test_environment(profile, self.test_environment_config_path)
+            if runtime:
+                self._set_if_present(env, "API_BASE_URL", runtime.get("api_base_url"))
+                auth = runtime.get("auth", {}) if isinstance(runtime.get("auth"), dict) else {}
+                front = auth.get("front_user", {}) if isinstance(auth.get("front_user"), dict) else {}
+                token = auth.get("token", {}) if isinstance(auth.get("token"), dict) else {}
 
-        runtime = load_test_environment(profile, self.test_environment_config_path)
-        if not runtime:
-            return env
+                self._set_if_present(env, "FRONT_USERNAME", front.get("username"))
+                self._set_if_present(env, "FRONT_PASSWORD", front.get("password"))
+                self._set_if_present(env, "FRONT_LOGIN_PATH", front.get("login_path"))
+                self._set_if_present(env, "FRONT_TOKEN_JSON_PATH", token.get("json_path"))
+                self._set_if_present(env, "AUTH_HEADER_NAME", token.get("header_name"))
+                self._set_if_present(env, "AUTH_SCHEME", token.get("scheme"))
 
-        self._set_if_present(env, "API_BASE_URL", runtime.get("api_base_url"))
-        auth = runtime.get("auth", {}) if isinstance(runtime.get("auth"), dict) else {}
-        front = auth.get("front_user", {}) if isinstance(auth.get("front_user"), dict) else {}
-        token = auth.get("token", {}) if isinstance(auth.get("token"), dict) else {}
-
-        self._set_if_present(env, "FRONT_USERNAME", front.get("username"))
-        self._set_if_present(env, "FRONT_PASSWORD", front.get("password"))
-        self._set_if_present(env, "FRONT_LOGIN_PATH", front.get("login_path"))
-        self._set_if_present(env, "FRONT_TOKEN_JSON_PATH", token.get("json_path"))
-        self._set_if_present(env, "AUTH_HEADER_NAME", token.get("header_name"))
-        self._set_if_present(env, "AUTH_SCHEME", token.get("scheme"))
+        for key, value in (template_config or {}).items():
+            if value:
+                env[key] = str(value)
         return env
 
     def _set_if_present(self, env: dict[str, str], key: str, value: object) -> None:

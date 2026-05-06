@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from .role_profiles import get_role_profile
+from .base_agent import BaseAgent
 
 
-class TestcaseAgent:
+class TestcaseAgent(BaseAgent):
     agent_name = "testcase_agent"
     stage_name = "testcase_design"
-
-    def role_profile(self) -> dict[str, object]:
-        return get_role_profile(self.agent_name)
 
     def run(
         self,
@@ -16,9 +13,18 @@ class TestcaseAgent:
         acceptance_criteria: dict[str, object],
     ) -> dict[str, object]:
         requirement_id = str(requirement_model["requirement_id"])
-        if "购物车" in str(requirement_model.get("title", "")):
+        title = str(requirement_model.get("title", ""))
+        if requirement_id == "REQ-SAAS-LIVECODE-ONLINE-OFFLINE-001" or ("活码" in title and "上下线" in title):
+            return self._run_livecode_testcase_design(requirement_id, acceptance_criteria)
+        if "购物车" in title:
             return self._run_cart_testcase_design(requirement_id, acceptance_criteria)
+        return self._run_default_testcase_design(requirement_id, acceptance_criteria)
 
+    def _run_default_testcase_design(
+        self,
+        requirement_id: str,
+        acceptance_criteria: dict[str, object],
+    ) -> dict[str, object]:
         cases = [
             {
                 "test_case_id": "TC-001",
@@ -26,11 +32,7 @@ class TestcaseAgent:
                 "type": "positive",
                 "requirement_id": requirement_id,
                 "priority": "P0",
-                "payload": {
-                    "username": "demo_user",
-                    "email": "demo@example.com",
-                    "password": "StrongPass123"
-                },
+                "payload": {"username": "demo_user", "email": "demo@example.com", "password": "StrongPass123"},
                 "expected_status_codes": [201],
             },
             {
@@ -39,11 +41,7 @@ class TestcaseAgent:
                 "type": "negative",
                 "requirement_id": requirement_id,
                 "priority": "P1",
-                "payload": {
-                    "username": "repeat_user",
-                    "email": "demo@example.com",
-                    "password": "StrongPass123"
-                },
+                "payload": {"username": "repeat_user", "email": "demo@example.com", "password": "StrongPass123"},
                 "expected_status_codes": [409],
             },
             {
@@ -52,27 +50,19 @@ class TestcaseAgent:
                 "type": "validation",
                 "requirement_id": requirement_id,
                 "priority": "P1",
-                "payload": {
-                    "username": "",
-                    "email": "",
-                    "password": "StrongPass123"
-                },
+                "payload": {"username": "", "email": "", "password": "StrongPass123"},
                 "expected_status_codes": [400],
             },
         ]
-
         matrix_rows = [
             "test_case_id,title,type,priority,expected_status_codes",
             "TC-001,用户使用合法数据注册成功,positive,P0,201",
             "TC-002,用户使用重复邮箱注册失败,negative,P1,409",
             "TC-003,用户缺少必填字段时注册失败,validation,P1,400",
         ]
-
         return {
-            "test_cases": {
-                "requirement_id": requirement_id,
-                "cases": cases,
-            },
+            "test_cases": {"requirement_id": requirement_id, "cases": cases},
+            "test_points": self._build_test_points(requirement_id, cases, acceptance_criteria),
             "test_case_matrix": "\n".join(matrix_rows),
             "coverage_report": "\n".join(
                 [
@@ -81,6 +71,154 @@ class TestcaseAgent:
                     "- Covered positive registration flow.",
                     "- Covered duplicate email rejection.",
                     "- Covered required field validation.",
+                    f"- Acceptance criteria count: {len(acceptance_criteria['criteria'])}",
+                ]
+            ),
+        }
+
+    def _run_livecode_testcase_design(
+        self,
+        requirement_id: str,
+        acceptance_criteria: dict[str, object],
+    ) -> dict[str, object]:
+        cases = [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "title": "新增活码并配置次日自动上线时间",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "save_contact_way",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-002",
+                "title": "编辑活码时同一时分秒且旧值未过期时保持原时间",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "save_contact_way",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-003",
+                "title": "保存获客链接并检查是否支持 nextAutoEnableTime",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "save_acquisition_link",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-004",
+                "title": "查询员工当前上下线状态列表",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "list_online_status",
+                "payload": {},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-005",
+                "title": "手动下线员工成功",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "change_online_status",
+                "payload": {"status": 0},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-006",
+                "title": "手动上线员工成功",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "change_online_status",
+                "payload": {"status": 1},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-007",
+                "title": "旧 MQ 消息因 next_auto_enable_time 不一致被丢弃",
+                "type": "negative",
+                "requirement_id": requirement_id,
+                "priority": "P1",
+                "automation_candidate": True,
+                "related_api_intent": "save_contact_way",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-008",
+                "title": "自动上线成功后顺延 next_auto_enable_time 到下一天同一时刻",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P1",
+                "automation_candidate": True,
+                "related_api_intent": "sync_org",
+                "payload": {},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-009",
+                "title": "仅 source=2 自建渠道受手动上下线影响",
+                "type": "positive",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "change_online_status",
+                "payload": {"status": 0, "source": 2},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-010",
+                "title": "无权限账号不能操作非本人企微员工",
+                "type": "negative",
+                "requirement_id": requirement_id,
+                "priority": "P0",
+                "automation_candidate": True,
+                "related_api_intent": "change_online_status",
+                "payload": {"status": 0},
+                "expected_status_codes": [401, 403],
+            },
+        ]
+        matrix_rows = ["test_case_id,title,type,priority,automation_candidate,related_api_intent"]
+        matrix_rows.extend(
+            [
+                ",".join(
+                    [
+                        case["test_case_id"],
+                        case["title"],
+                        case["type"],
+                        case["priority"],
+                        str(case["automation_candidate"]),
+                        case["related_api_intent"],
+                    ]
+                )
+                for case in cases
+            ]
+        )
+        return {
+            "test_cases": {"requirement_id": requirement_id, "cases": cases},
+            "test_points": self._build_test_points(requirement_id, cases, acceptance_criteria),
+            "test_case_matrix": "\n".join(matrix_rows),
+            "coverage_report": "\n".join(
+                [
+                    "# Coverage Report",
+                    "",
+                    "- Covered time configuration, manual online/offline, status query, and MQ-related behavior.",
+                    "- Covered source=2 scope restriction and permission boundary scenarios.",
                     f"- Acceptance criteria count: {len(acceptance_criteria['criteria'])}",
                 ]
             ),
@@ -100,11 +238,8 @@ class TestcaseAgent:
                 "priority": "P0",
                 "automation_candidate": True,
                 "related_api_intent": "add_cart_item",
-                "preconditions": ["用户已登录", "宠物存在、未删除、上架且库存大于 0"],
-                "steps": ["调用加入购物车接口", "查询购物车列表确认商品存在且默认勾选"],
                 "payload": {"petId": "${valid_pet_id}", "quantity": 1},
                 "expected_status_codes": [200, 201],
-                "expected_result": "加入成功；若同一宠物已存在，则数量累加且不超过库存。",
             },
             {
                 "test_case_id": "TC-CART-LIST-001",
@@ -114,11 +249,8 @@ class TestcaseAgent:
                 "priority": "P0",
                 "automation_candidate": True,
                 "related_api_intent": "list_cart_items",
-                "preconditions": ["用户已登录", "购物车中存在有效商品和可选失效商品"],
-                "steps": ["调用购物车列表接口", "校验商品字段、失效标识、勾选数量和总金额"],
                 "payload": {},
                 "expected_status_codes": [200],
-                "expected_result": "返回购物车商品明细、当前库存、勾选状态、失效状态和汇总信息。",
             },
             {
                 "test_case_id": "TC-CART-QTY-001",
@@ -128,11 +260,8 @@ class TestcaseAgent:
                 "priority": "P0",
                 "automation_candidate": True,
                 "related_api_intent": "update_cart_quantity",
-                "preconditions": ["用户已登录", "购物车项有效", "目标数量在 1 到当前库存之间"],
-                "steps": ["调用修改数量接口", "查询购物车列表确认数量、小计和总金额更新"],
                 "payload": {"quantity": 2},
                 "expected_status_codes": [200],
-                "expected_result": "数量修改成功，库存不被扣减。",
             },
             {
                 "test_case_id": "TC-CART-SELECT-001",
@@ -142,11 +271,8 @@ class TestcaseAgent:
                 "priority": "P1",
                 "automation_candidate": True,
                 "related_api_intent": "select_cart_item",
-                "preconditions": ["用户已登录", "购物车项有效"],
-                "steps": ["调用勾选接口", "调用取消勾选接口", "查询购物车列表确认状态持久化"],
                 "payload": {"selected": True},
                 "expected_status_codes": [200],
-                "expected_result": "有效商品勾选状态可修改并持久化。",
             },
             {
                 "test_case_id": "TC-CART-SELECT-ALL-001",
@@ -156,11 +282,8 @@ class TestcaseAgent:
                 "priority": "P1",
                 "automation_candidate": True,
                 "related_api_intent": "select_all_cart_items",
-                "preconditions": ["用户已登录", "购物车同时存在有效商品和失效商品"],
-                "steps": ["调用全选接口", "查询购物车列表确认有效商品被勾选、失效商品未被勾选"],
                 "payload": {"selected": True},
                 "expected_status_codes": [200],
-                "expected_result": "全选只影响有效商品。",
             },
             {
                 "test_case_id": "TC-CART-DELETE-001",
@@ -170,11 +293,8 @@ class TestcaseAgent:
                 "priority": "P1",
                 "automation_candidate": True,
                 "related_api_intent": "delete_cart_item",
-                "preconditions": ["用户已登录", "购物车中存在待删除商品"],
-                "steps": ["调用删除单个购物车商品接口", "查询购物车列表确认商品移除"],
                 "payload": {},
                 "expected_status_codes": [200, 204],
-                "expected_result": "商品从购物车移除，库存不变化。",
             },
             {
                 "test_case_id": "TC-CART-BATCH-DELETE-001",
@@ -184,11 +304,8 @@ class TestcaseAgent:
                 "priority": "P1",
                 "automation_candidate": True,
                 "related_api_intent": "batch_delete_cart_items",
-                "preconditions": ["用户已登录", "购物车中存在多个待删除商品"],
-                "steps": ["调用批量删除接口", "查询购物车列表确认目标商品移除"],
                 "payload": {"cartItemIds": ["${cart_item_id_1}", "${cart_item_id_2}"]},
                 "expected_status_codes": [200, 204],
-                "expected_result": "目标购物车项被批量移除。",
             },
             {
                 "test_case_id": "TC-CART-CLEAR-INVALID-001",
@@ -198,11 +315,8 @@ class TestcaseAgent:
                 "priority": "P1",
                 "automation_candidate": True,
                 "related_api_intent": "clear_invalid_cart_items",
-                "preconditions": ["用户已登录", "购物车中同时存在有效商品和失效商品"],
-                "steps": ["调用清空失效商品接口", "查询购物车列表确认失效商品被清理、有效商品保留"],
                 "payload": {},
                 "expected_status_codes": [200, 204],
-                "expected_result": "仅删除失效商品。",
             },
             {
                 "test_case_id": "TC-CART-CHECKOUT-001",
@@ -212,11 +326,8 @@ class TestcaseAgent:
                 "priority": "P0",
                 "automation_candidate": True,
                 "related_api_intent": "checkout_cart",
-                "preconditions": ["用户已登录", "至少一条已勾选有效商品", "所有待结算商品实时校验通过"],
-                "steps": ["调用购物车结算接口", "校验返回订单信息", "查询购物车确认已结算商品被移除"],
                 "payload": {},
                 "expected_status_codes": [200, 201],
-                "expected_result": "生成 CREATED 状态订单，购物车中移除本次已结算商品。",
             },
             {
                 "test_case_id": "TC-CART-CHECKOUT-002",
@@ -226,11 +337,8 @@ class TestcaseAgent:
                 "priority": "P0",
                 "automation_candidate": True,
                 "related_api_intent": "checkout_cart",
-                "preconditions": ["用户已登录", "已勾选商品存在下架、删除或库存不足场景"],
-                "steps": ["调用购物车结算接口", "校验失败原因", "确认不生成订单且购物车商品不删除"],
                 "payload": {},
                 "expected_status_codes": [400, 409],
-                "expected_result": "结算失败，返回具体失败原因，不生成订单，不删除购物车商品。",
             },
             {
                 "test_case_id": "TC-CART-AUTH-001",
@@ -240,14 +348,10 @@ class TestcaseAgent:
                 "priority": "P0",
                 "automation_candidate": True,
                 "related_api_intent": "add_cart_item",
-                "preconditions": ["未登录或登录态失效"],
-                "steps": ["调用购物车接口", "校验系统返回未认证提示"],
                 "payload": {"petId": "${valid_pet_id}", "quantity": 1},
                 "expected_status_codes": [401],
-                "expected_result": "系统拒绝请求并提示请先登录。",
             },
         ]
-
         matrix_rows = ["test_case_id,title,type,priority,automation_candidate,related_api_intent"]
         matrix_rows.extend(
             [
@@ -264,21 +368,69 @@ class TestcaseAgent:
                 for case in cases
             ]
         )
-
         return {
-            "test_cases": {
-                "requirement_id": requirement_id,
-                "cases": cases,
-            },
+            "test_cases": {"requirement_id": requirement_id, "cases": cases},
+            "test_points": self._build_test_points(requirement_id, cases, acceptance_criteria),
             "test_case_matrix": "\n".join(matrix_rows),
             "coverage_report": "\n".join(
                 [
-                    "# 购物车测试覆盖报告",
+                    "# Coverage Report",
                     "",
-                    "- 覆盖加入购物车、列表、数量、勾选、全选、删除、清空失效、结算和未登录场景。",
-                    "- P0 用例覆盖主链路和关键失败路径。",
-                    "- automation_candidate=True 的用例可进入接口自动化候选集。",
-                    f"- 验收标准数量：{len(acceptance_criteria['criteria'])}",
+                    "- Covered add/list/update/select/delete/checkout cart behaviors.",
+                    "- Covered invalid item cleanup and unauthenticated access.",
+                    f"- Acceptance criteria count: {len(acceptance_criteria['criteria'])}",
                 ]
             ),
+        }
+
+    def _build_test_points(
+        self,
+        requirement_id: str,
+        cases: list[dict[str, object]],
+        acceptance_criteria: dict[str, object],
+    ) -> dict[str, object]:
+        criteria_items = acceptance_criteria.get("criteria", [])
+        test_points = []
+        for index, case in enumerate(cases, start=1):
+            criteria = criteria_items[index - 1] if index - 1 < len(criteria_items) else None
+            linked_requirement_ids = [requirement_id]
+            linked_criteria_ids = [str(criteria.get("criteria_id"))] if isinstance(criteria, dict) and criteria.get("criteria_id") else []
+            test_points.append(
+                {
+                    "test_point_id": f"TP-{index:03d}",
+                    "title": str(case.get("title", case.get("test_case_id", ""))),
+                    "requirement_id": requirement_id,
+                    "linked_requirement_ids": linked_requirement_ids,
+                    "linked_criteria_ids": linked_criteria_ids,
+                    "linked_case_ids": [str(case.get("test_case_id", ""))],
+                    "priority": str(case.get("priority", "")),
+                    "automation_candidate": bool(case.get("automation_candidate", False)),
+                    "coverage_type": str(case.get("type", "")),
+                    "notes": str(criteria.get("description", "")) if isinstance(criteria, dict) else "",
+                }
+            )
+
+        uncovered_criteria = []
+        covered_criteria_ids = {
+            criterion_id
+            for point in test_points
+            for criterion_id in point["linked_criteria_ids"]
+            if criterion_id
+        }
+        for item in criteria_items:
+            if not isinstance(item, dict):
+                continue
+            criterion_id = str(item.get("criteria_id", ""))
+            if criterion_id and criterion_id not in covered_criteria_ids:
+                uncovered_criteria.append(criterion_id)
+
+        return {
+            "requirement_id": requirement_id,
+            "test_points": test_points,
+            "trace_summary": {
+                "criteria_total": len(criteria_items),
+                "points_total": len(test_points),
+                "cases_total": len(cases),
+                "uncovered_criteria_ids": uncovered_criteria,
+            },
         }

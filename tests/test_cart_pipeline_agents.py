@@ -68,6 +68,9 @@ def test_testcase_agent_generates_cart_cases_with_automation_candidates():
     assert all("priority" in case for case in cases)
     assert all("automation_candidate" in case for case in cases)
     assert any(case["automation_candidate"] is True for case in cases)
+    assert outputs["test_points"]["requirement_id"] == "REQ-CART-001"
+    assert outputs["test_points"]["test_points"]
+    assert any(point["linked_case_ids"] for point in outputs["test_points"]["test_points"])
 
 
 def test_api_mapper_agent_maps_cart_cases_to_matching_apifox_paths():
@@ -306,3 +309,181 @@ def test_api_mapper_agent_outputs_expanded_interface_details_from_apifox_openapi
     assert mapping["interface_detail_status"] == "detail_fetched_from_apifox_openapi"
     assert "$ref" not in json.dumps(interface, ensure_ascii=False)
     assert "allOf" not in json.dumps(interface, ensure_ascii=False)
+
+
+def test_api_mapper_agent_request_schema_contains_full_interface_contract():
+    test_cases = {
+        "requirement_id": "REQ-DETAIL-002",
+        "cases": [
+            {
+                "test_case_id": "TC-DETAIL-002",
+                "title": "save livecode with full schema",
+                "related_api_intent": "save_contact_way",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            }
+        ],
+    }
+    api_document = {
+        "openapi": "3.1.0",
+        "info": {"title": "Livecode Service"},
+        "paths": {
+            "/contact/way/save": {
+                "post": {
+                    "summary": "save contact way",
+                    "parameters": [
+                        {
+                            "name": "CurrentUser",
+                            "in": "header",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["state", "categoryId"],
+                                    "properties": {
+                                        "state": {"type": "string"},
+                                        "name": {"type": "string"},
+                                        "categoryId": {"type": "integer"},
+                                        "corpId": {"type": "string"},
+                                        "welcomeConfigVO": {
+                                            "type": "object",
+                                            "properties": {
+                                                "configType": {"type": "integer"},
+                                            },
+                                        },
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    }
+
+    outputs = ApiMapperAgent().run(test_cases, api_document)
+    request_schema = outputs["request_schema"]
+
+    assert request_schema["path"] == "/contact/way/save"
+    assert request_schema["method"] == "POST"
+    assert request_schema["body_type"] == "application/json"
+    assert request_schema["required_fields"] == ["state", "categoryId"]
+    assert request_schema["interfaces"]
+    interface = request_schema["interfaces"][0]
+    assert interface["headers"][0]["name"] == "CurrentUser"
+    assert interface["request_body"]["content"]["application/json"]["schema"]["properties"]["welcomeConfigVO"][
+        "properties"
+    ]["configType"]["type"] == "integer"
+
+
+def test_api_mapper_agent_reads_database_context_from_knowledge_base_for_livecode_cases():
+    test_cases = {
+        "requirement_id": "REQ-SAAS-LIVECODE-ONLINE-OFFLINE-001",
+        "cases": [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "title": "save contact way with next auto enable time",
+                "related_api_intent": "save_contact_way",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-005",
+                "title": "change online status manually",
+                "related_api_intent": "change_online_status",
+                "payload": {"status": 0, "source": 2},
+                "expected_status_codes": [200],
+            },
+        ],
+    }
+    api_document = {
+        "info": {"title": "Livecode Service"},
+        "paths": {
+            "/api/contact/way/save": {"post": {"summary": "save contact way"}},
+            "/api/acquisition/user/online/change": {"post": {"summary": "change online status"}},
+        },
+    }
+
+    outputs = ApiMapperAgent().run(test_cases, api_document, database_scope="saas")
+
+    table_names = {
+        table["table_name"]
+        for table in outputs["database_catalog"]["tables"]
+    }
+    case_mappings = outputs["database_mapping"]["mappings"]
+
+    assert outputs["database_catalog"]["knowledge_scope"] == "saas"
+    assert "wework_contact_way" in table_names
+    assert any(item["matched_tables"] for item in case_mappings)
+    assert "wework_acquisition_user_online_status" in outputs["database_mapping"]["summary"]["missing_tables"]
+
+
+def test_api_mapper_agent_prefers_livecode_endpoints_for_livecode_intents():
+    test_cases = {
+        "requirement_id": "REQ-SAAS-LIVECODE-ONLINE-OFFLINE-001",
+        "cases": [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "title": "新增活码并配置次日自动上线时间",
+                "related_api_intent": "save_contact_way",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-003",
+                "title": "保存获客链接并检查是否支持 nextAutoEnableTime",
+                "related_api_intent": "save_acquisition_link",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-004",
+                "title": "查询员工当前上下线状态列表",
+                "related_api_intent": "list_online_status",
+                "payload": {},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-005",
+                "title": "手动下线员工成功",
+                "related_api_intent": "change_online_status",
+                "payload": {"status": 0},
+                "expected_status_codes": [200],
+            },
+            {
+                "test_case_id": "TC-LIVECODE-008",
+                "title": "自动上线成功后顺延 next_auto_enable_time 到下一天同一时刻",
+                "related_api_intent": "sync_org",
+                "payload": {},
+                "expected_status_codes": [200],
+            },
+        ],
+    }
+    api_document = {
+        "info": {"title": "Livecode Service"},
+        "paths": {
+            "/cc/quality/inspectors/add": {"post": {"summary": "无关接口"}},
+            "/groupcontact/way/save": {"post": {"summary": "群活码保存"}},
+            "/contact/way/save": {"post": {"summary": "活码保存"}},
+            "/acquisition/link/saveOrUpdate": {"post": {"summary": "新增或保存获客链接"}},
+            "/acquisition/user/online/list": {"get": {"summary": "查询员工当前上下线状态列表"}},
+            "/acquisition/user/online/change": {"post": {"summary": "手动调整员工上下线状态"}},
+            "/tenant/shop/sync": {"post": {"summary": "同步店铺"}},
+            "/cp/org/synchro": {"post": {"summary": "同步企微组织"}},
+        },
+    }
+
+    outputs = ApiMapperAgent().run(test_cases, api_document)
+    mappings = {item["test_case_id"]: item for item in outputs["endpoint_mapping"]["mappings"]}
+
+    assert mappings["TC-LIVECODE-001"]["path"] == "/contact/way/save"
+    assert mappings["TC-LIVECODE-003"]["path"] == "/acquisition/link/saveOrUpdate"
+    assert mappings["TC-LIVECODE-004"]["path"] == "/acquisition/user/online/list"
+    assert mappings["TC-LIVECODE-005"]["path"] == "/acquisition/user/online/change"
+    assert mappings["TC-LIVECODE-008"]["path"] == "/cp/org/synchro"

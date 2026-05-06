@@ -1,0 +1,92 @@
+{
+  "requirement_model": {
+    "requirement_id": "REQ-SAAS-LIVECODE-ONLINE-OFFLINE-001",
+    "title": "活码和链接自动上线与手动上下线",
+    "source_path": "{requirement_path}",
+    "source_type": "pdf",
+    "business_background": "为企微获客模块补齐临时下线、次日自动上线、手动上下线管理能力，覆盖渠道活码和获客链接两类渠道。",
+    "objects": [
+      {"name": "渠道活码", "table": "wework_contact_way"},
+      {"name": "获客链接", "table": "wework_customer_acquisition_link"}
+    ],
+    "design_goals": [
+      "支持页面配置次日自动上线时间",
+      "支持通过 RocketMQ 延时消息触发自动上线",
+      "支持页面手动对员工执行上线/下线操作",
+      "支持记录员工当前上下线状态和操作流水",
+      "仅处理自建渠道数据，避免影响系统内置渠道"
+    ],
+    "core_rules": [
+      "不新增主状态机，复用 wework_acquisition_rule_user_config.enable 作为真实生效开关",
+      "页面保存配置后预先投递延时消息，到点后由消费者处理自动上线",
+      "消费时校验主表 next_auto_enable_time 是否仍与消息期望触发时间一致，不一致则丢弃旧消息",
+      "自动上线成功后需要将 next_auto_enable_time 顺延到下一天同一时刻并继续补发消息",
+      "手动上下线仅影响自建渠道数据 source=2",
+      "手动上下线采用本地事务 + 事务后异步刷新企微配置"
+    ],
+    "new_tables": [
+      "wework_acquisition_user_online_status",
+      "wework_acquisition_user_online_log"
+    ],
+    "api_clues": [
+      "POST /contact/way/save",
+      "POST /acquisition/link/saveOrUpdate",
+      "GET /acquisition/user/online/list",
+      "POST /acquisition/user/online/change"
+    ],
+    "blocking_questions": [
+      "RocketMQ topic/tag/消息体与消费入口未在本次 PDF 中给出",
+      "CurrentUser 的真实生成规则未在需求文档中给出",
+      "自动上线后重新同步企微的真实调用链路未在需求文档中给出"
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "REQ-LIVECODE-001-SC-01",
+        "name": "配置渠道活码次日自动上线时间",
+        "expected_outcome": "保存成功并记录 next_auto_enable_time，用于后续自动上线调度。"
+      },
+      {
+        "scenario_id": "REQ-LIVECODE-001-SC-02",
+        "name": "配置获客链接次日自动上线时间",
+        "expected_outcome": "保存成功并确认接口契约是否支持 nextAutoEnableTime。"
+      },
+      {
+        "scenario_id": "REQ-LIVECODE-001-SC-03",
+        "name": "员工手动上下线",
+        "expected_outcome": "仅 source=2 自建渠道受影响，并保留状态与日志。"
+      },
+      {
+        "scenario_id": "REQ-LIVECODE-001-SC-04",
+        "name": "RocketMQ 延时消息触发自动上线",
+        "expected_outcome": "到点自动上线，旧消息按 next_auto_enable_time 校验后丢弃。"
+      }
+    ]
+  },
+  "acceptance_criteria": {
+    "requirement_id": "REQ-SAAS-LIVECODE-ONLINE-OFFLINE-001",
+    "criteria": [
+      {"criteria_id": "AC-LIVECODE-001", "description": "渠道活码新增/编辑接口需要支持保存次日自动上线时间。"},
+      {"criteria_id": "AC-LIVECODE-002", "description": "获客链接新增/编辑接口需要核对 nextAutoEnableTime 的真实契约支持情况。"},
+      {"criteria_id": "AC-LIVECODE-003", "description": "页面需要展示员工当前上下线状态，并支持手动上下线操作。"},
+      {"criteria_id": "AC-LIVECODE-004", "description": "自动上线通过 RocketMQ 延时消息触发，不能引入新的主状态机。"},
+      {"criteria_id": "AC-LIVECODE-005", "description": "自动上线成功后需要将 next_auto_enable_time 顺延到下一天同一时刻。"},
+      {"criteria_id": "AC-LIVECODE-006", "description": "消费旧消息时需要校验 next_auto_enable_time，一致才允许生效。"},
+      {"criteria_id": "AC-LIVECODE-007", "description": "手动上下线仅影响 source=2 的自建渠道数据。"},
+      {"criteria_id": "AC-LIVECODE-008", "description": "手动上下线采用本地事务提交后异步刷新企微配置。"},
+      {"criteria_id": "AC-LIVECODE-009", "description": "需要新增员工上下线状态表和操作日志表，满足状态可视与审计要求。"},
+      {"criteria_id": "AC-LIVECODE-010", "description": "权限边界不清、MQ 细节缺失和企微同步链路未明确的内容必须标记为待确认。"}
+    ]
+  },
+  "business_flow": "# 活码和链接自动上线与手动上下线业务流程\n\n1. 页面新增或编辑渠道活码/获客链接时填写次日自动上线时间。\n2. 保存接口落库 next_auto_enable_time，并在事务完成后投递 RocketMQ 延时消息。\n3. 到达触发时间后，消费端校验主表 next_auto_enable_time 是否仍与消息一致。\n4. 校验通过则将 enable 切为生效状态，并触发企微配置刷新。\n5. 自动上线成功后顺延 next_auto_enable_time 到下一天同一时刻，并继续补发消息。\n6. 页面支持管理员手动执行员工上线/下线，仅影响 source=2 自建渠道数据。\n7. 系统同时维护员工上下线状态表和操作日志表，满足页面展示与审计追踪。",
+  "risk_points": {
+    "requirement_id": "REQ-SAAS-LIVECODE-ONLINE-OFFLINE-001",
+    "risks": [
+      "编辑场景下时间不变时不应错误顺延到次日。",
+      "旧 RocketMQ 消息若未按 next_auto_enable_time 做幂等校验，可能导致错误上线。",
+      "手动上下线权限边界不清会导致越权操作风险。",
+      "状态表、日志表与规则表可能出现一致性问题。",
+      "企微异步刷新失败不能影响主交易，但必须可观测。",
+      "获客链接接口契约与需求方案可能存在不一致，需要以真实接口为准。"
+    ]
+  }
+}

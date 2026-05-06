@@ -207,6 +207,107 @@ def render_dependency_graph_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_database_catalog_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Database Catalog",
+        "",
+        f"- Knowledge Scope: `{payload.get('knowledge_scope', '')}`",
+        f"- Table Count: `{payload.get('table_count', 0)}`",
+        "",
+        "## Tables",
+        "",
+    ]
+    tables = payload.get("tables", [])
+    if not isinstance(tables, list) or not tables:
+        lines.append("- None")
+        return "\n".join(lines) + "\n"
+
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        lines.extend(
+            [
+                "## Table",
+                "",
+                f"- Database: `{table.get('db_name', '')}`",
+                f"- Table: `{table.get('table_name', '')}`",
+                f"- Comment: {table.get('table_comment', '') or 'None'}",
+                f"- Source File: `{table.get('source_file', '')}`",
+                "",
+                "### Columns",
+                "",
+            ]
+        )
+        columns = table.get("columns", [])
+        if isinstance(columns, list) and columns:
+            for column in columns:
+                if not isinstance(column, dict):
+                    continue
+                lines.append(
+                    f"- `{column.get('column_name', '')}` `{column.get('column_type', '')}` "
+                    f"nullable={column.get('is_nullable', '')} default={column.get('default_value', '')} "
+                    f"key={column.get('column_key', '')}: {column.get('column_comment', '') or 'None'}"
+                )
+        else:
+            lines.append("- None")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_database_mapping_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Database Mapping",
+        "",
+        f"- Requirement ID: `{payload.get('requirement_id', '')}`",
+        f"- Knowledge Scope: `{payload.get('knowledge_scope', '')}`",
+        "",
+        "## Case Mapping",
+        "",
+    ]
+    mappings = payload.get("mappings", [])
+    if not isinstance(mappings, list) or not mappings:
+        lines.append("- None")
+        return "\n".join(lines) + "\n"
+
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        lines.extend(
+            [
+                "## Mapping",
+                "",
+                f"- Test Case ID: `{mapping.get('test_case_id', '')}`",
+                f"- Title: {mapping.get('title', '')}",
+                f"- Intent: `{mapping.get('related_api_intent', '')}`",
+                f"- Interface: `{mapping.get('interface_method', '')} {mapping.get('interface_path', '')}`",
+                "",
+                "### Matched Tables",
+                "",
+            ]
+        )
+        matched_tables = mapping.get("matched_tables", [])
+        if isinstance(matched_tables, list) and matched_tables:
+            for table in matched_tables:
+                if not isinstance(table, dict):
+                    continue
+                lines.append(
+                    f"- `{table.get('db_name', '')}.{table.get('table_name', '')}` "
+                    f"({table.get('relationship', '')}, {table.get('usage', '')})"
+                )
+        else:
+            lines.append("- None")
+
+        lines.extend(["", "### Missing Tables", ""])
+        missing_tables = mapping.get("missing_tables", [])
+        if isinstance(missing_tables, list) and missing_tables:
+            for table_name in missing_tables:
+                lines.append(f"- `{table_name}`")
+        else:
+            lines.append("- None")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _render_parameter_list(parameters: Any) -> str:
     if not isinstance(parameters, list) or not parameters:
         return "- None"

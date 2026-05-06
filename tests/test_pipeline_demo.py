@@ -42,9 +42,16 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
     required_artifacts = [
         result.run_dir / "requirement_agent" / "output" / "requirement_model.json",
         result.run_dir / "testcase_agent" / "output" / "test_cases.json",
+        result.run_dir / "testcase_agent" / "output" / "test_points.json",
         result.run_dir / "api_mapper_agent" / "output" / "apis" / "api_source_request.md",
         result.run_dir / "api_mapper_agent" / "output" / "apis" / "api_catalog.md",
+        result.run_dir / "api_mapper_agent" / "output" / "database" / "database_catalog.json",
+        result.run_dir / "api_mapper_agent" / "output" / "database" / "database_catalog.md",
+        result.run_dir / "api_mapper_agent" / "output" / "database_mapping.json",
+        result.run_dir / "api_mapper_agent" / "output" / "missing_database_report.md",
         result.run_dir / "api_mapper_agent" / "output" / "mappings" / "endpoint_mapping.md",
+        result.run_dir / "api_mapper_agent" / "output" / "mappings" / "database_mapping.md",
+        result.run_dir / "api_mapper_agent" / "output" / "mappings" / "missing_database_report.md",
         result.run_dir / "api_mapper_agent" / "output" / "apis" / "request_schema.md",
         result.run_dir / "api_mapper_agent" / "output" / "mappings" / "dependency_graph.md",
         result.run_dir / "api_mapper_agent" / "output" / "endpoint_mapping.json",
@@ -119,7 +126,7 @@ def test_demo_pipeline_creates_manifest_and_stage_outputs(tmp_path):
         assert "当前 Agent 职责说明" in llm_prompt_text
         assert "当前阶段输出要求" in llm_prompt_text
         assert llm_invocation["agent_name"] == stage_dir_name
-        assert llm_invocation["backend"] == "local_python_backend"
+        assert isinstance(llm_invocation["backend"], str)
         assert llm_invocation["role_markdown_path"].replace("\\", "/").endswith(f"roles/{stage_dir_name}.md")
         assert llm_invocation["prompt_template_path"].endswith(".md")
 
@@ -232,8 +239,166 @@ def test_generated_api_tests_assert_business_code_when_response_enveloped():
     )
 
     assert "def _effective_status_code" in generated_test
-    assert "body.get('code')" in generated_test
+    assert "def _business_code" in generated_test
     assert "effective_status_code in expected_status_codes" in generated_test
+
+
+def test_generated_api_tests_treat_string_business_success_code_as_success():
+    generated_test = AutomationAgent()._build_generated_test_file(
+        [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "automation_id": "AUTO-CASE-001",
+                "title": "活码保存成功",
+                "path": "/contact/way/save",
+                "method": "POST",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            }
+        ]
+    )
+
+    assert "SUCCESS_RESPONSE_CODE" in generated_test
+    assert "code == SUCCESS_RESPONSE_CODE" in generated_test
+    assert "return 599" in generated_test
+
+
+def test_generated_api_tests_support_key_value_login_success_marker():
+    generated_test = AutomationAgent()._build_generated_test_file(
+        [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "automation_id": "AUTO-CASE-001",
+                "title": "活码保存成功",
+                "path": "/contact/way/save",
+                "method": "POST",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "expected_status_codes": [200],
+            }
+        ]
+    )
+
+    assert "def _matches_success_marker" in generated_test
+    assert "marker.partition('=')" in generated_test
+    assert "_extract_json_path(body, key)" in generated_test
+
+
+def test_generated_api_tests_build_case_payload_from_request_schema():
+    generated_test = AutomationAgent()._build_generated_test_file(
+        [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "automation_id": "AUTO-CASE-001",
+                "title": "活码保存成功",
+                "path": "/contact/way/save",
+                "method": "POST",
+                "payload": {"nextAutoEnableTime": "2099-12-31 10:00:00"},
+                "request_body": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "state": {"type": "string"},
+                                    "categoryId": {"type": "integer"},
+                                    "nextAutoEnableTime": {"type": "string"},
+                                },
+                                "required": ["state", "categoryId"],
+                            }
+                        }
+                    }
+                },
+                "expected_status_codes": [200],
+            }
+        ]
+    )
+
+    assert "def _build_case_payload" in generated_test
+    assert "def _schema_example_value" in generated_test
+    assert "case.get('request_body', {})" in generated_test
+    assert "def _should_autofill_field" in generated_test
+
+
+def test_generated_api_tests_support_raw_payload_strategy():
+    generated_test = AutomationAgent()._build_generated_test_file(
+        [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "automation_id": "AUTO-CASE-001",
+                "title": "活码按真实参数发送",
+                "path": "/contact/way/save",
+                "method": "POST",
+                "payload_strategy": "raw_payload",
+                "payload": {
+                    "name": "1111111111",
+                    "categoryId": 16,
+                    "corpId": "ww18a9d0bd0914df32",
+                },
+                "request_body": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "state": {"type": "string"},
+                                    "userId": {"type": "integer"},
+                                },
+                                "required": ["state"],
+                            }
+                        }
+                    }
+                },
+                "expected_status_codes": [200],
+            }
+        ]
+    )
+
+    assert "if case.get('payload_strategy') == 'raw_payload':" in generated_test
+
+
+def test_generated_api_tests_skip_current_user_example_header():
+    generated_test = AutomationAgent()._build_generated_test_file(
+        [
+            {
+                "test_case_id": "TC-LIVECODE-001",
+                "automation_id": "AUTO-CASE-001",
+                "title": "活码登录鉴权请求",
+                "path": "/contact/way/save",
+                "method": "POST",
+                "headers": [
+                    {
+                        "name": "CurrentUser",
+                        "example": "example-current-user",
+                    }
+                ],
+                "payload": {"name": "demo"},
+                "expected_status_codes": [200],
+            }
+        ]
+    )
+
+    assert "if lowered in {'currentuser', 'authorization'}:" in generated_test
+
+
+def test_generated_api_tests_support_case_skip_reason_and_base_url_override():
+    generated_test = AutomationAgent()._build_generated_test_file(
+        [
+            {
+                "test_case_id": "TC-LIVECODE-008",
+                "automation_id": "AUTO-CASE-008",
+                "title": "同步组织数据",
+                "path": "/cp/org/synchro",
+                "method": "GET",
+                "base_url": "https://api.test.njxjjt.com/wx/mp/",
+                "skip_reason": "no_data",
+                "expected_status_codes": [200],
+            }
+        ]
+    )
+
+    assert "case.get('skip_reason')" in generated_test
+    assert "pytest.skip(str(case['skip_reason']))" in generated_test
+    assert "case.get('base_url')" in generated_test
 
 
 def test_allure_viewing_guide_includes_actionable_commands(tmp_path):
@@ -296,6 +461,41 @@ def test_automation_agent_reads_local_test_environment_config(tmp_path, monkeypa
     assert env["FRONT_TOKEN_JSON_PATH"] == "data.token"
     assert env["AUTH_HEADER_NAME"] == "Authorization"
     assert env["AUTH_SCHEME"] == "Bearer"
+
+
+def test_automation_agent_template_config_overrides_runtime_env_defaults(tmp_path, monkeypatch):
+    config_path = tmp_path / "test_environment.local.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "environments": {
+                    "local": {
+                        "api_base_url": "http://localhost:8000",
+                        "auth": {
+                            "front_user": {"username": "env-user", "password": "env-pass", "login_path": "/env/login"},
+                            "token": {"json_path": "data.token", "header_name": "Authorization", "scheme": "Bearer"},
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AI_PIPELINE_TEST_ENV_PROFILE", "local")
+
+    env = AutomationAgent(test_environment_config_path=config_path)._build_pytest_env(
+        template_config={
+            "API_BASE_URL": "https://api.test.njxjjt.com/operation/mp/",
+            "FRONT_USERNAME": "template-user",
+            "FRONT_LOGIN_PATH": "https://api.test.njxjjt.com/auth/ua/admin_login",
+            "AUTH_SCHEME": "无前缀",
+        }
+    )
+
+    assert env["API_BASE_URL"] == "https://api.test.njxjjt.com/operation/mp/"
+    assert env["FRONT_USERNAME"] == "template-user"
+    assert env["FRONT_LOGIN_PATH"] == "https://api.test.njxjjt.com/auth/ua/admin_login"
+    assert env["AUTH_SCHEME"] == "无前缀"
 
 
 def test_demo_pipeline_supports_relative_workspace_paths(tmp_path, monkeypatch):

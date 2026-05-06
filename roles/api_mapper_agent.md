@@ -23,6 +23,8 @@
 - 输出请求头、Query 参数、Path 参数、请求体、响应体、字段说明、鉴权方式和接口描述。
 - 递归展开 `$ref`、`allOf`、`oneOf`、`anyOf` 等 schema 结构。
 - 建立测试用例与接口之间的映射关系，并标记接口详情获取状态。
+- 从指定数据库结构知识库中提取相关表结构，只读取结构元数据，不读取业务数据。
+- 建立测试用例、接口与数据库表之间的映射关系，并输出缺失表、缺失字段和待确认项。
 
 ## 不负责什么
 
@@ -48,6 +50,13 @@
 - apis/request_schema.md
 - dependency_graph.json
 - mappings/dependency_graph.md
+- database/database_catalog.json
+- database/database_catalog.md
+- database_mapping.json
+- mappings/database_mapping.json
+- mappings/database_mapping.md
+- missing_database_report.md
+- mappings/missing_database_report.md
 
 ## 质量门禁
 
@@ -57,6 +66,8 @@
 - schema 引用必须递归展开。
 - 如果详情获取失败，必须明确标记失败类型，不能用基础索引冒充完整详情。
 - 无法确认的接口字段不得猜测，必须标记为“待确认”。
+- 数据库上下文必须来自知识库中的表结构文件，不能凭测试标题或接口名称臆造表结构。
+- 数据库输出必须至少说明命中的表、未命中的表以及缺失字段或待确认项。
 
 ## 阻塞条件
 

@@ -53,7 +53,8 @@ def main() -> None:
     elif args.stage == "testcase_agent":
         outputs = _run_testcase_stage(stage)
     elif args.stage == "api_mapper_agent":
-        outputs = _run_api_mapper_stage(stage, input_paths[0])
+        api_doc_path = input_paths[0] if input_paths else None
+        outputs = _run_api_mapper_stage(stage, api_doc_path)
     elif args.stage == "automation_agent":
         outputs = _run_automation_stage(stage, run_dir)
     else:  # pragma: no cover - defensive branch
@@ -119,7 +120,7 @@ def _run_testcase_stage(stage: StageWorkspace) -> dict[str, Any]:
     return outputs
 
 
-def _run_api_mapper_stage(stage: StageWorkspace, api_doc_path: Path) -> dict[str, Any]:
+def _run_api_mapper_stage(stage: StageWorkspace, api_doc_path: Path | None) -> dict[str, Any]:
     agent = ApiMapperAgent()
     profile = agent.role_profile()
     _write_role_profile(stage, profile)
@@ -130,14 +131,18 @@ def _run_api_mapper_stage(stage: StageWorkspace, api_doc_path: Path) -> dict[str
         source_request = {
             "platform": "local_file",
             "project_id": "",
-            "source_url": str(api_doc_path),
+            "source_url": str(api_doc_path) if api_doc_path else "",
             "detail_fetch_mode": "local_api_document",
             "requested_endpoints": [],
         }
     stage.write_output_json("api_source_request.json", source_request)
     stage.write_output_text("apis/api_source_request.md", render_api_source_request_markdown(source_request))
     test_cases = json.loads((stage.input_dir / "test_cases.json").read_text(encoding="utf-8"))
-    api_document = load_api_document(api_doc_path)
+    if api_doc_path is not None:
+        api_document = load_api_document(api_doc_path)
+    else:
+        staged_api_doc = stage.input_dir / "api_document.json"
+        api_document = json.loads(staged_api_doc.read_text(encoding="utf-8-sig"))
     input_snapshot = {
         "test_cases.json": test_cases,
         "api_source_request.json": source_request,
@@ -345,10 +350,10 @@ def _read_stage_input_file(path: Path) -> str:
         return f"[binary input omitted] {path.name}"
 
 
-def _resolve_database_scope(api_doc_path: Path, source_request: dict[str, Any]) -> str:
+def _resolve_database_scope(api_doc_path: Path | None, source_request: dict[str, Any]) -> str:
     joined = " ".join(
         [
-            str(api_doc_path),
+            str(api_doc_path) if api_doc_path else "",
             str(source_request.get("source_url", "")),
             str(source_request.get("platform", "")),
         ]

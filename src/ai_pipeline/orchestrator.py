@@ -32,6 +32,13 @@ from .stage_gates import (
 )
 
 
+def _remove_readonly(func: Any, path: str, exc_info: Any) -> None:
+    import stat
+
+    Path(path).chmod(stat.S_IWRITE)
+    func(path)
+
+
 class PipelineOrchestrator:
     def __init__(self, api_document_resolver: Any | None = None) -> None:
         self.requirement_agent = RequirementAgent()
@@ -53,12 +60,12 @@ class PipelineOrchestrator:
         require_agent4_excel: bool = True,
         agent4_excel_confirmed: bool = False,
     ) -> PipelineRunResult:
-        if bool(api_doc_path) == bool(api_source_url):
-            raise ValueError("必须且只能提供 api_doc_path 或 api_source_url 其中一个。")
+        if api_doc_path and api_source_url:
+            raise ValueError("api_doc_path 和 api_source_url 只能提供其中一个，不能同时提供。")
 
         run_dir = workspace_root.resolve() / "runs" / run_id
         if run_dir.exists():
-            shutil.rmtree(run_dir)
+            shutil.rmtree(run_dir, onerror=_remove_readonly)
         run_dir.mkdir(parents=True, exist_ok=True)
         summary_dir = run_dir / "summary"
         store = ArtifactStore(summary_dir)
@@ -141,6 +148,7 @@ class PipelineOrchestrator:
         automation_stage = StageWorkspace(run_id, run_dir, "automation_agent", event_log)
         automation_stage.write_input_json("endpoint_mapping.json", mapping_outputs["endpoint_mapping"])
         automation_stage.write_input_json("test_cases.json", testcase_outputs["test_cases"])
+        automation_stage.write_input_json("database_mapping.json", mapping_outputs["database_mapping"])
         blockers = check_automation_input_gate(
             automation_stage,
             require_agent4_excel=require_agent4_excel,
@@ -341,11 +349,11 @@ class PipelineOrchestrator:
     def _run_api_mapper_stage(
         self,
         stage: StageWorkspace,
-        api_doc_path: Path,
+        api_doc_path: Path | None,
     ) -> dict[str, object]:
         input_files = [str(path.relative_to(stage.run_dir)) for path in stage.input_dir.rglob("*") if path.is_file()]
         started_at = utc_now_iso()
-        self._run_stage_subprocess(stage, started_at, input_files, [api_doc_path])
+        self._run_stage_subprocess(stage, started_at, input_files, [api_doc_path] if api_doc_path else [])
         return self._load_api_mapper_outputs(stage)
 
     def _prepare_api_mapper_input(
@@ -355,7 +363,7 @@ class PipelineOrchestrator:
         test_cases: dict[str, Any],
         api_doc_path: Path | None,
         api_source_url: str | None,
-    ) -> Path:
+    ) -> Path | None:
         if api_doc_path is not None:
             staged_api_doc = stage.copy_input(api_doc_path)
             api_document = json.loads(staged_api_doc.read_text(encoding="utf-8-sig"))
@@ -394,7 +402,40 @@ class PipelineOrchestrator:
             return staged_api_doc
 
         if api_source_url is None:
-            raise ValueError("缺少接口来源，请提供 api_doc_path 或 api_source_url。")
+            # 无显式 API 来源，从知识库加载基础索引
+            knowledge_index = self._load_knowledge_base_index()
+            if knowledge_index is None:
+                return None
+            project_id = str(knowledge_index.get("project_id", ""))
+            source_url = str(knowledge_index.get("source_url", ""))
+            selected_endpoints = self.api_mapper_agent.select_endpoints_from_index(test_cases, knowledge_index)
+            stage.write_input_json("api_source_request.json", {
+                "platform": "apifox",
+                "url": source_url,
+                "project_id": project_id,
+                "source": "knowledge_base_auto",
+            })
+            stage.write_input_json("api_source_resolved.json", {
+                "platform": "apifox",
+                "url": source_url,
+                "project_id": project_id,
+                "resource_type": "project",
+                "resource_id": None,
+                "source": "knowledge_base_auto",
+            })
+            stage.write_input_json("api_knowledge_index.json", knowledge_index)
+            stage.write_input_json("selected_endpoint_candidates.json", {
+                "project_id": project_id,
+                "selection_mode": "knowledge_index_auto",
+                "endpoints": selected_endpoints,
+            })
+            if not selected_endpoints:
+                raise ValueError("Agent 3 could not confirm any endpoint from the knowledge base; all details remain 待确认.")
+            detailed_document = self.api_document_resolver.resolve_apifox_project_for_endpoints(
+                project_id=project_id,
+                endpoints=selected_endpoints,
+            )
+            return stage.write_input_json("api_document.json", detailed_document)
 
         declaration = self.api_mapper_agent.declare_api_source(api_source_url)
         source, api_index = self.api_document_resolver.resolve_apifox_url(api_source_url)
@@ -432,6 +473,28 @@ class PipelineOrchestrator:
             and "paths" not in api_document
             and isinstance(api_document.get("apis"), list)
         )
+
+    def _load_knowledge_base_index(self) -> dict[str, Any] | None:
+        knowledge_root = self.api_mapper_agent.knowledge_root
+        default_scope = self.api_mapper_agent.default_database_scope
+        # 优先加载默认作用域（saas），再兜底其他作用域
+        scope_order = [default_scope] + [
+            scope_dir.name
+            for scope_dir in sorted(knowledge_root.iterdir())
+            if scope_dir.is_dir() and not scope_dir.name.startswith("_") and scope_dir.name != default_scope
+        ]
+        for scope_name in scope_order:
+            apis_dir = knowledge_root / scope_name / "apis"
+            if not apis_dir.exists():
+                continue
+            for index_file in sorted(apis_dir.glob("apifox_project_*.json")):
+                try:
+                    data = json.loads(index_file.read_text(encoding="utf-8-sig"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if isinstance(data.get("apis"), list) and data.get("apis"):
+                    return data
+        return None
 
     def _run_automation_stage(
         self,

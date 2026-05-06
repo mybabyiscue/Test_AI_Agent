@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,28 +10,6 @@ from ..config import project_root
 from ..platforms.apifox import parse_apifox_url
 from .base_agent import BaseAgent
 
-
-INTENT_TABLE_MAP: dict[str, list[str]] = {
-    "save_contact_way": [
-        "wework_contact_way",
-        "wework_acquisition_rule_user_config",
-    ],
-    "save_acquisition_link": [
-        "wework_customer_acquisition_link",
-        "wework_acquisition_rule_user_config",
-    ],
-    "list_online_status": [
-        "wework_acquisition_user_online_status",
-    ],
-    "change_online_status": [
-        "wework_acquisition_user_online_status",
-        "wework_acquisition_user_online_log",
-    ],
-    "sync_org": [
-        "wework_acquisition_rule_user_config",
-        "wework_acquisition_user_online_status",
-    ],
-}
 
 INTENT_FIELD_HINTS: dict[str, list[str]] = {
     "save_contact_way": ["next_auto_enable_time", "enable"],
@@ -48,11 +27,22 @@ INTENT_PREFERRED_PATHS: dict[str, list[str]] = {
     "sync_org": ["/cp/org/synchro", "/cp/org/synchro/{corpId}"],
 }
 
-PATH_TABLE_HINTS: list[tuple[str, str]] = [
-    ("contact/way", "wework_contact_way"),
-    ("acquisition/link", "wework_customer_acquisition_link"),
-    ("online/list", "wework_acquisition_user_online_status"),
-    ("online/change", "wework_acquisition_user_online_status"),
+# intent → 知识库表名匹配关键词组（每组是 AND 关系，组间是 OR 关系）
+# 例如 ["wework", "user"] 表示表名必须同时包含 "wework" 和 "user"
+INTENT_TABLE_KEYWORDS: dict[str, list[list[str]]] = {
+    "save_contact_way": [["wework", "contact_way"], ["wework", "acquisition_rule"]],
+    "save_acquisition_link": [["wework", "acquisition_link"], ["wework", "acquisition_rule"]],
+    "list_online_status": [["wework", "user"]],
+    "change_online_status": [["wework", "user"]],
+    "sync_org": [["wework", "user"], ["wework", "acquisition_rule"]],
+}
+
+# 接口路径 → 知识库表名匹配关键词组
+PATH_TABLE_KEYWORDS: list[tuple[str, list[list[str]]]] = [
+    ("contact/way", [["wework", "contact_way"]]),
+    ("acquisition/link", [["wework", "acquisition_link"]]),
+    ("online/list", [["wework", "user"]]),
+    ("online/change", [["wework", "user"]]),
 ]
 
 
@@ -254,7 +244,7 @@ class ApiMapperAgent(BaseAgent):
         for case in test_cases.get("cases", []):
             if not isinstance(case, dict):
                 continue
-            table_names = self._expected_tables_for_case(case, mapping_by_case_id.get(str(case.get("test_case_id", "")), {}))
+            table_names = self._expected_tables_for_case(case, mapping_by_case_id.get(str(case.get("test_case_id", "")), {}), table_catalog)
             field_hints = self._expected_fields_for_case(case)
             case_matches: list[dict[str, Any]] = []
             case_missing_tables: list[str] = []
@@ -360,16 +350,71 @@ class ApiMapperAgent(BaseAgent):
                 }
         return table_catalog
 
-    def _expected_tables_for_case(self, case: dict[str, Any], mapping: dict[str, Any]) -> list[str]:
-        expected = []
+    def _expected_tables_for_case(
+        self,
+        case: dict[str, Any],
+        mapping: dict[str, Any],
+        table_catalog: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """根据 intent 和接口路径，从知识库中动态匹配相关表名。
+
+        使用 AND 关系的关键词组：每组内所有词都必须匹配（表名或表注释），
+        组间是 OR 关系（匹配任一组即命中）。
+        """
+        keyword_groups: list[list[str]] = []
         intent = str(case.get("related_api_intent", ""))
-        expected.extend(INTENT_TABLE_MAP.get(intent, []))
+        keyword_groups.extend(INTENT_TABLE_KEYWORDS.get(intent, []))
 
         mapping_path = str(mapping.get("path", ""))
-        for path_keyword, table_name in PATH_TABLE_HINTS:
-            if path_keyword in mapping_path and table_name not in expected:
-                expected.append(table_name)
-        return expected
+        for path_keyword, path_kw_groups in PATH_TABLE_KEYWORDS:
+            if path_keyword in mapping_path:
+                keyword_groups.extend(path_kw_groups)
+
+        # 如果没有预定义的关键词，自动从接口路径提取
+        if not keyword_groups and mapping_path:
+            auto_keywords = self._extract_keywords_from_path(mapping_path)
+            if auto_keywords:
+                keyword_groups.append(auto_keywords)
+
+        if not keyword_groups:
+            return []
+
+        matched: list[str] = []
+        seen: set[str] = set()
+        for table_name_lower, table_info in table_catalog.items():
+            table_name = str(table_info.get("table_name", ""))
+            table_comment = str(table_info.get("table_comment", "")).lower()
+            searchable = f"{table_name_lower} {table_comment}"
+            for group in keyword_groups:
+                if all(kw.lower() in searchable for kw in group):
+                    if table_name not in seen:
+                        seen.add(table_name)
+                        matched.append(table_name)
+                    break
+        return matched
+
+    def _extract_keywords_from_path(self, path: str) -> list[str]:
+        """从接口路径自动提取关键词用于匹配表名。
+
+        例如: /acquisition/user/online/change -> ["acquisition", "user"]
+        """
+        # 移除开头的斜杠和路径参数
+        clean_path = path.strip("/")
+        # 移除路径参数如 {id}
+        clean_path = re.sub(r"\{[^}]+\}", "", clean_path)
+        # 分割路径
+        parts = [p for p in clean_path.split("/") if p]
+
+        # 过滤掉常见的动词和无意义的词
+        stop_words = {
+            "api", "v1", "v2", "save", "update", "delete", "get", "list",
+            "add", "remove", "change", "query", "select", "create", "edit",
+            "batch", "import", "export", "sync", "check", "verify",
+        }
+        keywords = [p for p in parts if p.lower() not in stop_words and len(p) > 2]
+
+        # 只返回前2个关键词，避免匹配太宽泛
+        return keywords[:2] if keywords else []
 
     def _expected_fields_for_case(self, case: dict[str, Any]) -> list[str]:
         field_hints = []

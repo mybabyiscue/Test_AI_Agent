@@ -18,6 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="workspace",
         help="Workspace directory used to store run artifacts",
     )
+    parser.add_argument(
+        "--agent4-excel-confirmed",
+        action="store_true",
+        help="Confirm Agent 4 Excel template has been reviewed",
+    )
     return parser
 
 
@@ -40,6 +45,7 @@ def main() -> None:
             run_id=args.run_id,
             api_doc_path=Path(args.api_doc) if args.api_doc else None,
             api_source_url=args.api_source_url,
+            agent4_excel_confirmed=args.agent4_excel_confirmed,
         )
         print(result.manifest_path)
         return

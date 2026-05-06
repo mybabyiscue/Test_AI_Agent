@@ -50,6 +50,7 @@ class AutomationAgent(BaseAgent):
             endpoint_mapping["mappings"],
             run_id=run_id,
             template_config=template_config,
+            stage_workspace=stage_workspace,
         )
         test_file = stage_workspace.write_output_text(
             "generated_tests/test_generated_api_cases.py",
@@ -205,6 +206,7 @@ class AutomationAgent(BaseAgent):
         *,
         run_id: str,
         template_config: dict[str, str],
+        stage_workspace: StageWorkspace | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         prepared_cases = copy.deepcopy(mappings)
         report: dict[str, Any] = {"warnings": [], "case_overrides": []}
@@ -212,7 +214,7 @@ class AutomationAgent(BaseAgent):
             return prepared_cases, report
 
         try:
-            context = self._discover_livecode_context(template_config)
+            context = self._discover_livecode_context(template_config, stage_workspace=stage_workspace)
         except Exception as exc:  # pragma: no cover - network/runtime dependent
             report["warnings"].append(f"livecode_context_unavailable: {exc}")
             return prepared_cases, report
@@ -273,7 +275,7 @@ class AutomationAgent(BaseAgent):
 
         return prepared_cases, report
 
-    def _discover_livecode_context(self, template_config: dict[str, str]) -> dict[str, Any]:
+    def _discover_livecode_context(self, template_config: dict[str, str], stage_workspace: StageWorkspace | None = None) -> dict[str, Any]:
         env = self._build_pytest_env(template_config=template_config)
         operation_base_url = str(env.get("API_BASE_URL", "")).strip()
         if not operation_base_url:
@@ -317,6 +319,14 @@ class AutomationAgent(BaseAgent):
             headers=auth_headers,
         )
         online_candidates = online_response.get("data", []) if isinstance(online_response.get("data"), list) else []
+        candidates_source = "api"
+
+        # 如果 API 获取的 online_candidates 为空，降级到数据库查询
+        if not online_candidates and stage_workspace is not None:
+            db_candidates = self._query_online_candidates_from_db(stage_workspace)
+            if db_candidates:
+                online_candidates = db_candidates
+                candidates_source = "database_fallback"
 
         return {
             "operation_base_url": operation_base_url if operation_base_url.endswith("/") else f"{operation_base_url}/",
@@ -329,7 +339,161 @@ class AutomationAgent(BaseAgent):
             "contact_categories": contact_categories,
             "link_categories": link_categories,
             "online_candidates": online_candidates,
+            "online_candidates_source": candidates_source,
         }
+
+    def _query_online_candidates_from_db(self, stage_workspace: StageWorkspace) -> list[dict[str, Any]]:
+        """从数据库查询企微员工作为 online_candidates 的降级方案。
+
+        动态读取 Agent 3 产出的 database_mapping.json，获取当前需求映射到的表，
+        而非硬编码表名。
+        """
+        try:
+            import pymysql
+        except ImportError:
+            return []
+
+        # 从 database_mapping.json 动态获取候选表
+        # 只关注 online_status 相关的表（change_online_status 和 list_online_status）
+        candidate_tables: list[tuple[str, str]] = []
+        db_mapping_path = stage_workspace.input_dir / "database_mapping.json"
+        if db_mapping_path.exists():
+            try:
+                db_mapping = json.loads(db_mapping_path.read_text(encoding="utf-8-sig"))
+                for mapping in db_mapping.get("mappings", []):
+                    # 只处理 online_status 相关的用例
+                    intent = str(mapping.get("related_api_intent", ""))
+                    if intent not in ("change_online_status", "list_online_status"):
+                        continue
+                    # 优先从 matched_tables 获取（包含 db_name 和 table_name）
+                    for table in mapping.get("matched_tables", []):
+                        tname = str(table.get("table_name", "")).strip()
+                        dbname = str(table.get("db_name", "")).strip()
+                        if tname and dbname and (tname, dbname) not in candidate_tables:
+                            candidate_tables.append((tname, dbname))
+                    # 如果 matched_tables 为空，从 missing_tables 获取（需要从知识库推断 db_name）
+                    if not mapping.get("matched_tables"):
+                        for table_name in mapping.get("missing_tables", []):
+                            tname = str(table_name).strip()
+                            if tname:
+                                # 默认使用 scrm 库（根据知识库配置）
+                                dbname = "scrm"
+                                if (tname, dbname) not in candidate_tables:
+                                    candidate_tables.append((tname, dbname))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if not candidate_tables:
+            return []
+
+        # 过滤掉不是 online_status 相关的表
+        # 只保留表名包含 "online" 或 "acquisition" 的表
+        filtered_tables = []
+        for tname, dbname in candidate_tables:
+            if "online" in tname.lower() or "acquisition" in tname.lower():
+                filtered_tables.append((tname, dbname))
+        candidate_tables = filtered_tables
+
+        if not candidate_tables:
+            return []
+
+        # 获取数据库连接信息（根据 knowledge_scope 确定 profile）
+        scope = "saas"
+        if db_mapping_path.exists():
+            try:
+                db_mapping = json.loads(db_mapping_path.read_text(encoding="utf-8-sig"))
+                scope = str(db_mapping.get("knowledge_scope", "saas"))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        try:
+            from ..credentials import EnvCredentialProvider
+            provider = EnvCredentialProvider()
+            cred = provider.get_database(scope)
+        except Exception:
+            return []
+
+        for target_table, db_name in candidate_tables:
+            try:
+                conn = pymysql.connect(
+                    host=cred.host,
+                    port=cred.port,
+                    user=cred.user,
+                    password=cred.password,
+                    database=db_name,
+                    charset="utf8mb4",
+                    cursorclass=pymysql.cursors.DictCursor,
+                )
+                with conn.cursor() as cursor:
+                    # 检查表是否存在
+                    cursor.execute(
+                        "SELECT COUNT(*) AS cnt FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                        (db_name, target_table),
+                    )
+                    if cursor.fetchone()["cnt"] == 0:
+                        conn.close()
+                        continue
+
+                    # 获取列名
+                    cursor.execute(f"DESCRIBE `{target_table}`")
+                    columns = [row["Field"] for row in cursor.fetchall()]
+                    col_set = {c.lower() for c in columns}
+
+                    # 只查询包含 CorpId 和 UserId 列的表
+                    if "corpid" not in col_set or "userid" not in col_set:
+                        conn.close()
+                        continue
+
+                    # 构建 WHERE 条件
+                    where = " WHERE `IsDeleted` = 0" if "isdeleted" in col_set else ""
+
+                    # 构建 SELECT 列
+                    select_parts = []
+                    has_corpid = "corpid" in col_set
+                    has_userid = "userid" in col_set
+                    has_status = "status" in col_set
+                    has_enable = "enable" in col_set
+                    has_name = "name" in col_set
+
+                    if has_corpid:
+                        select_parts.append("`CorpId` AS corpId")
+                    if has_userid:
+                        select_parts.append("`UserId` AS userId")
+                    if has_status:
+                        select_parts.append("`Status` AS status")
+                    elif has_enable:
+                        select_parts.append("`Enable` AS status")
+                    if has_name:
+                        select_parts.append("`Name` AS name")
+
+                    if not select_parts:
+                        conn.close()
+                        continue
+
+                    sql = f"SELECT {', '.join(select_parts)} FROM `{target_table}`{where} LIMIT 10"
+                    cursor.execute(sql)
+                    rows = cursor.fetchall()
+                conn.close()
+
+                candidates = []
+                for row in rows:
+                    corp_id = str(row.get("corpId", "")).strip()
+                    user_id = str(row.get("userId", "")).strip()
+                    if not corp_id or not user_id:
+                        continue
+                    candidates.append({
+                        "corpId": corp_id,
+                        "userId": user_id,
+                        "status": int(row.get("status", 0)) if row.get("status") is not None else 0,
+                        "name": str(row.get("name", "")),
+                        "source": f"database_fallback:{target_table}",
+                    })
+                if candidates:
+                    return candidates
+            except Exception:
+                continue
+
+        return []
 
     def _build_contact_way_payload(
         self,

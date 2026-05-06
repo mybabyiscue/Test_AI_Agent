@@ -31,6 +31,23 @@ python scripts/sync_knowledge.py --system saas --project 4152663
 |------|------|------|
 | `/sync-knowledge` | 知识库同步 | `/sync-knowledge 丝路数据库`、`/sync-knowledge saas接口`、`/sync-knowledge 全部` |
 
+## 用户必读：各阶段核心产物
+
+| 阶段 | 必看文件 | 说明 |
+|------|----------|------|
+| Agent 1 需求分析 | `requirement_agent/output/business_flow.md` | 业务流程说明 |
+| Agent 1 需求分析 | `requirement_agent/output/requirement_model.json` | 结构化需求模型 |
+| Agent 2 测试用例 | `testcase_agent/output/test_cases.json` | 完整测试用例 |
+| Agent 2 测试用例 | `testcase_agent/output/coverage_report.md` | 覆盖率说明 |
+| Agent 3 接口映射 | `api_mapper_agent/output/mappings/endpoint_mapping.md` | 用例→接口映射 |
+| Agent 3 接口映射 | `api_mapper_agent/output/apis/api_catalog.md` | 接口详情（请求体/响应体） |
+| Agent 3 接口映射 | `api_mapper_agent/output/mappings/database_mapping.md` | 用例→数据库表映射 |
+| Agent 4 自动化 | `automation_agent/output/execution_report.json` | 执行结果 |
+| 全局 | `summary/manifest.json` | 运行总状态 |
+| 全局 | `summary/blocking_report.json` | 阻断原因（如有） |
+
+> `.json` 给程序消费，`.md` 给人阅读。优先看 `.md` 文件。
+
 ## 项目结构
 
 ```

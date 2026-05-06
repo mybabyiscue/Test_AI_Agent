@@ -134,6 +134,57 @@ tests/
 run_demo.py
 ```
 
+## 用户必读：各阶段核心产物
+
+每次运行完成后，你需要查看以下文件来确认各阶段输出是否正确。
+
+### Agent 1：需求分析
+
+| 文件 | 说明 |
+|------|------|
+| `requirement_agent/output/requirement_model.json` | 结构化需求模型（子需求、验收条件、业务规则） |
+| `requirement_agent/output/acceptance_criteria.json` | 验收标准清单 |
+| `requirement_agent/output/business_flow.md` | 业务流程说明（可读性最好） |
+| `requirement_agent/output/risk_points.json` | 风险点与待确认项 |
+
+### Agent 2：测试用例设计
+
+| 文件 | 说明 |
+|------|------|
+| `testcase_agent/output/test_cases.json` | 完整测试用例（含 payload、预期状态码） |
+| `testcase_agent/output/test_points.json` | 测试点清单 |
+| `testcase_agent/output/test_case_matrix.csv` | 用例矩阵（Excel 可直接打开） |
+| `testcase_agent/output/coverage_report.md` | 覆盖率说明（可读性最好） |
+
+### Agent 3：接口映射
+
+| 文件 | 说明 |
+|------|------|
+| `api_mapper_agent/output/mappings/endpoint_mapping.md` | 测试用例到接口的映射关系（必看） |
+| `api_mapper_agent/output/apis/api_catalog.md` | 接口详情：请求体、响应体、鉴权方式（必看） |
+| `api_mapper_agent/output/apis/request_schema.md` | 请求结构摘要 |
+| `api_mapper_agent/output/mappings/database_mapping.md` | 测试用例到数据库表的映射 |
+| `api_mapper_agent/output/mappings/dependency_graph.md` | 接口依赖关系 |
+| `api_mapper_agent/output/mappings/missing_database_report.md` | 缺失数据库表/字段报告 |
+
+### Agent 4：自动化执行
+
+| 文件 | 说明 |
+|------|------|
+| `automation_agent/output/execution_report.json` | 执行结果（通过/失败/错误详情） |
+| `automation_agent/output/generated_tests/test_generated_api_cases.py` | 生成的 pytest 脚本 |
+| `automation_agent/output/automation_plan.json` | 自动化执行计划 |
+
+### 全局汇总
+
+| 文件 | 说明 |
+|------|------|
+| `summary/manifest.json` | 本次运行总状态（completed/blocked） |
+| `summary/blocking_report.json` | 阻断原因（如有） |
+| `summary/traceability_report.md` | 需求→用例→接口→脚本全链路追溯 |
+
+> 提示：每个 Agent 的 `output/` 下同时有 `.json` 和 `.md` 两种格式。`.json` 给程序消费，`.md` 给人阅读。优先看 `.md` 文件。
+
 ## 每次运行的产物结构
 
 每次运行都会生成一个 `run_id` 目录，例如：
